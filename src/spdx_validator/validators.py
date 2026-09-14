@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +28,11 @@ class JsonSchemaValidator:
         Args:
             schema_path: Path to SPDX 2.3 JSON schema file. If None, uses bundled schema.
         """
-        if schema_path is None:
-            # Use the bundled schema file
-            schema_path = Path(__file__).parent / "data" / "spdx-2.3-spec.json"
-
-        self.schema_path = Path(schema_path)
+        self.schema_path = (
+            Path(schema_path)
+            if schema_path is not None
+            else files("spdx_validator").joinpath("data/spdx-2.3-spec.json")
+        )
         self._schema: dict[str, Any] | None = None
         self._validator: Draft7Validator | None = None
 

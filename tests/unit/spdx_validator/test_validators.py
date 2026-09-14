@@ -72,11 +72,23 @@ class TestJsonSchemaValidator:
         validator = JsonSchemaValidator(custom_path)
         assert validator.schema_path == custom_path
 
-    def test_init_with_default_schema_path(self) -> None:
-        """Test validator initialization with default schema path."""
+    @patch("spdx_validator.validators.files")
+    def test_init_with_default_schema_path(self, mock_files: Mock) -> None:
+        """Test validator initialization with the bundled schema resource."""
+        schema_resource = mock_files.return_value.joinpath.return_value
+
         validator = JsonSchemaValidator()
-        expected_path = Path(validator.schema_path).name
-        assert expected_path == "spdx-2.3-spec.json"
+
+        assert validator.schema_path is schema_resource
+        mock_files.return_value.joinpath.assert_called_once_with(
+            "data/spdx-2.3-spec.json"
+        )
+
+    def test_default_schema_loads_from_package_resource(self) -> None:
+        """Test that the bundled schema is readable as a package resource."""
+        schema = JsonSchemaValidator().schema
+
+        assert schema["$schema"] == "http://json-schema.org/draft-07/schema#"
 
     @patch("pathlib.Path.open", new_callable=mock_open)
     @patch("json.load")
