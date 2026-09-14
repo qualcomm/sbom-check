@@ -29,9 +29,7 @@ class JsonSchemaValidator:
         """
         if schema_path is None:
             # Use the bundled schema file
-            schema_path = (
-                Path(__file__).parent.parent.parent / "data" / "spdx-2.3-spec.json"
-            )
+            schema_path = Path(__file__).parent / "data" / "spdx-2.3-spec.json"
 
         self.schema_path = Path(schema_path)
         self._schema: dict[str, Any] | None = None

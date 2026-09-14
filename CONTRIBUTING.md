@@ -63,12 +63,11 @@ sbom-check/
 │   │   └── config/         # Configuration system
 │   └── spdx_validator/     # Integrated SPDX validator library
 │       ├── cli.py          # SPDX-Validate CLI
+│       ├── data/           # Bundled SPDX schema
+│       │   └── spdx-2.3-spec.json
 │       ├── engine.py       # Core SPDX validation engine
 │       ├── models.py       # SPDX data models
-│       └── validators.py   # JSON Schema & OWL validators
-├── data/                   # Shared schema and ontology files
-│   ├── spdx-2.3-spec.json
-│   └── spdx-2.3-ontology.owl
+│       └── validators.py   # JSON Schema & semantic validators
 ├── tests/                  # Test suite
 │   ├── unit/sbom_check/    # SBOM-Check tests
 │   └── unit/spdx_validator/ # SPDX-Validator tests
