@@ -20,3 +20,4 @@ dist
 *.iml
 *.pkl
 *.yaml
+!src/spdx_validator/data/*.json
