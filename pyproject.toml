@@ -171,11 +171,11 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["src"]
+source = ["sbom_check", "spdx_validator"]
 omit = [
     "*/tests/*",
     "*/test_*",
-    "src/sbom_check/_version.py",
+    "*/sbom_check/_version.py",
 ]
 
 [tool.coverage.report]
@@ -199,16 +199,38 @@ runner = "uv-venv-lock-runner"
 parallel_show_output = true
 
 # Python version test environments
-[tool.tox.env."py{310,311,312,313}"]
-description = "Run tests with Python {env_name}"
-groups = ["dev"]
+[tool.tox.env.py310]
+description = "Run tests with Python 3.10"
+dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=src", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov-report=html", "--cov-report=term"]
+]
+
+[tool.tox.env.py311]
+description = "Run tests with Python 3.11"
+dependency_groups = ["dev"]
+commands = [
+    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov-report=html", "--cov-report=term"]
+]
+
+[tool.tox.env.py312]
+description = "Run tests with Python 3.12"
+dependency_groups = ["dev"]
+commands = [
+    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov-report=html", "--cov-report=term"]
+]
+
+[tool.tox.env.py313]
+description = "Run tests with Python 3.13"
+dependency_groups = ["dev"]
+commands = [
+    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov-report=html", "--cov-report=term"]
 ]
 
 # Ruff formatting
 [tool.tox.env.ruff-format]
 description = "Format code with ruff"
+dependency_groups = ["dev"]
 commands = [
     ["ruff", "format", "src", "tests"]
 ]
@@ -216,6 +238,7 @@ commands = [
 # Ruff linting (check only)
 [tool.tox.env.ruff-check]
 description = "Check code with ruff"
+dependency_groups = ["dev"]
 commands = [
     ["ruff", "check", "src", "tests"]
 ]
@@ -223,6 +246,7 @@ commands = [
 # Ruff linting (with fixes)
 [tool.tox.env.ruff-fix]
 description = "Fix code issues with ruff"
+dependency_groups = ["dev"]
 commands = [
     ["ruff", "check", "--fix", "src", "tests"]
 ]
@@ -230,6 +254,7 @@ commands = [
 # Type checking
 [tool.tox.env.mypy]
 description = "Type checking with mypy"
+dependency_groups = ["dev"]
 commands = [
     ["mypy", "src"]
 ]
@@ -237,6 +262,7 @@ commands = [
 # Pylint linting
 [tool.tox.env.pylint]
 description = "Linting with pylint"
+dependency_groups = ["dev"]
 commands = [
     ["pylint", "src"]
 ]
@@ -244,7 +270,7 @@ commands = [
 # Unit tests only
 [tool.tox.env.test-unit]
 description = "Run unit tests only"
-groups = ["dev"]
+dependency_groups = ["dev"]
 commands = [
     ["pytest", "tests/unit/", "-v", "-m", "not slow"]
 ]
@@ -252,7 +278,7 @@ commands = [
 # Integration tests only
 [tool.tox.env.test-integration]
 description = "Run integration tests only"
-groups = ["dev"]
+dependency_groups = ["dev"]
 commands = [
     ["pytest", "tests/integration/", "-v"]
 ]
@@ -260,9 +286,9 @@ commands = [
 # Parallel test execution
 [tool.tox.env.test-parallel]
 description = "Run tests in parallel"
-groups = ["dev"]
+dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=src", "-n", "auto"]
+    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "-n", "auto"]
 ]
 
 # Clean up generated files

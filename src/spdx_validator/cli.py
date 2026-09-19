@@ -158,7 +158,7 @@ def output_json_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
     default=None,
     help="Number of parallel jobs for validation (default: number of CPU cores)",
 )
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals
+def main(  # pylint: disable=too-many-positional-arguments,too-many-locals  # noqa: PLR0917
     paths: tuple[Path, ...],
     schema_only: bool,
     semantic_only: bool,

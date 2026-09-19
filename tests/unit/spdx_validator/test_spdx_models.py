@@ -103,14 +103,14 @@ def test_spdx_document_version_validation() -> None:
     invalid_version_data = valid_doc_data.copy()
     invalid_version_data["spdxVersion"] = "SPDX-2.2"
 
-    with pytest.raises(ValidationError, match="Only SPDX-2.3 is supported"):
+    with pytest.raises(ValidationError, match=r"Only SPDX-2\.3 is supported"):
         SpdxDocument.model_validate(invalid_version_data)
 
     # Invalid data license
     invalid_license_data = valid_doc_data.copy()
     invalid_license_data["dataLicense"] = "MIT"
 
-    with pytest.raises(ValidationError, match="Data license must be CC0-1.0"):
+    with pytest.raises(ValidationError, match=r"Data license must be CC0-1\.0"):
         SpdxDocument.model_validate(invalid_license_data)
 
 

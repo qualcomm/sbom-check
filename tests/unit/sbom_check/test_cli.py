@@ -4,6 +4,7 @@
 """Unit tests for CLI module."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import Mock, patch
 
 from click.testing import CliRunner
@@ -344,6 +345,7 @@ custom_rules: []
     assert "Profile: Custom Config" in result.output
 
 
+@patch("sbom_check.cli.ProcessPoolExecutor", new=ThreadPoolExecutor)
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_validate_multiple_files(mock_engine_class, tmp_path):
     """Test CLI with multiple files."""
@@ -379,7 +381,8 @@ def test_cli_validate_multiple_files(mock_engine_class, tmp_path):
     test_file2 = tmp_path / "test2.json"
     test_file2.write_text(json.dumps(spdx_doc))
 
-    result = runner.invoke(main, [str(test_file1), str(test_file2)])
+    with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+        result = runner.invoke(main, [str(test_file1), str(test_file2)])
 
     # Check that both file names appear in the output
     assert test_file1.name in result.output
@@ -464,6 +467,7 @@ def test_cli_validate_directory_non_recursive(tmp_path):
         assert sub_file.name not in result.output
 
 
+@patch("sbom_check.cli.ProcessPoolExecutor", new=ThreadPoolExecutor)
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_validate_directory_recursive(mock_engine_class, tmp_path):
     """Test recursive directory scanning."""
@@ -555,7 +559,8 @@ def test_cli_validate_custom_pattern(tmp_path):
         mock_engine_class.return_value = mock_engine
 
         # Test with *.json pattern
-        result = runner.invoke(main, ["--pattern", "*.json", str(tmp_path)])
+        with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+            result = runner.invoke(main, ["--pattern", "*.json", str(tmp_path)])
 
         # Should find both .json and .spdx.json files
         assert result.exit_code == 0
@@ -603,7 +608,8 @@ def test_cli_validate_mixed_paths(tmp_path):
         mock_engine_class.return_value = mock_engine
 
         # Test with mix of file and directory
-        result = runner.invoke(main, [str(individual_file), str(subdir)])
+        with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+            result = runner.invoke(main, [str(individual_file), str(subdir)])
 
         # Should find both files
         assert result.exit_code == 0
@@ -667,7 +673,8 @@ def test_cli_validate_parallel_processing(tmp_path):
 
         mock_validate.side_effect = mock_validate_func
 
-        result = runner.invoke(main, ["--jobs", "2"] + [str(f) for f in files])
+        with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+            result = runner.invoke(main, ["--jobs", "2"] + [str(f) for f in files])
 
         # Should process all files in parallel
         assert result.exit_code == 0
@@ -713,7 +720,8 @@ def test_cli_multiple_files_json_output(tmp_path):
         mock_engine.validate_file.return_value = mock_result
         mock_engine_class.return_value = mock_engine
 
-        result = runner.invoke(main, ["--output-format", "json", str(file1), str(file2)])
+        with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+            result = runner.invoke(main, ["--output-format", "json", str(file1), str(file2)])
 
         # Should contain JSON summary for multiple files
         assert result.exit_code == 0
@@ -767,7 +775,7 @@ def test_cli_mixed_validation_results(tmp_path):
         mock_engine = Mock()
         # Return different results based on file path
         def mock_validate_file(file_path):
-            if "valid.spdx.json" in str(file_path):
+            if file_path.name == "valid.spdx.json":
                 return valid_result
             else:
                 return invalid_result
@@ -775,7 +783,8 @@ def test_cli_mixed_validation_results(tmp_path):
         mock_engine.validate_file.side_effect = mock_validate_file
         mock_engine_class.return_value = mock_engine
 
-        result = runner.invoke(main, [str(file1), str(file2)])
+        with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
+            result = runner.invoke(main, [str(file1), str(file2)])
 
         # Should show mixed results and exit with error code
         assert result.exit_code == 1

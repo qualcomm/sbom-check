@@ -164,7 +164,7 @@ class SbomCheckResult(BaseModel):
             failed_rules=failed_rules,
         )
 
-    def add_message(  # pylint: disable=too-many-positional-arguments
+    def add_message(  # pylint: disable=too-many-positional-arguments  # noqa: PLR0917
         self,
         severity: ValidationSeverity,
         message: str,

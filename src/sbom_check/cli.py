@@ -200,7 +200,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
     help="Validate a configuration file",
 )
 @click.version_option(version=__version__, prog_name="sbom-check")
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements
+def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements  # noqa: PLR0917
     paths: tuple[str, ...],
     profile: str,
     config: str | None,

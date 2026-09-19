@@ -20,3 +20,4 @@ dist
 *.iml
 *.pkl
 *.yaml
+src/sbom_check/_version.py
