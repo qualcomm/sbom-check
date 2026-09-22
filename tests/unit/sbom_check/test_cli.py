@@ -345,7 +345,6 @@ custom_rules: []
     assert "Profile: Custom Config" in result.output
 
 
-@patch("sbom_check.cli.ProcessPoolExecutor", new=ThreadPoolExecutor)
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_validate_multiple_files(mock_engine_class, tmp_path):
     """Test CLI with multiple files."""
