@@ -22,6 +22,6 @@ jobs:
         python -m pip install --upgrade pip
         pip install tox tox-uv uv
     - name: Install supported Python versions
-      run: uv python install 3.10 3.11 3.12 3.13
+      run: uv python install 3.10 3.11 3.12 3.13 3.14
     - name: Run Tox
       run: tox
