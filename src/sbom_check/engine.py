@@ -309,7 +309,8 @@ class SbomCheckEngine:
                 )
 
         # Validate filesAnalyzed business logic
-        files_analyzed = package.get("filesAnalyzed")
+        # SPDX 2.3 specifies that filesAnalyzed defaults to true when omitted.
+        files_analyzed = package.get("filesAnalyzed", True)
         if files_analyzed is True:
             # Check required fields when filesAnalyzed is true
             for required_field in pkg_config.files_analyzed_rules.when_true_requires:

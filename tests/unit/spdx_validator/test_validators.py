@@ -384,6 +384,7 @@ class TestSemanticValidator:
                 {
                     "SPDXID": "SPDXRef-Package",
                     "name": "Test Package",
+                    "filesAnalyzed": False
                 }
             ],
         }
@@ -447,3 +448,74 @@ class TestSemanticValidator:
         assert len(result.messages) >= 1
         # Should fail because no DESCRIBES relationship is present
         assert any("DESCRIBES relationship" in msg.message for msg in result.messages)
+
+    def test_missing_package_verification_code_when_files_analyzed(self):
+        """Test when filesAnalyzed is true without a verification code."""
+        validator = SemanticValidator()
+
+        spdx_data = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "MyProduct-v1.0.0-SBOM",
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-MyApp",
+                    "name": "MyApplication",
+                    "filesAnalyzed": True,
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-MyApp",
+                }
+            ],
+        }
+
+        result = validator.validate(spdx_data)
+
+        errors = result.messages
+
+        assert len(errors) == 1
+        assert errors[0].rule_id == "missing_package_verification_code"
+        assert errors[0].path == "packages.0.packageVerificationCode"
+        assert errors[0].element_id == "SPDXRef-Package-MyApp"
+        assert errors[0].message == (
+            "Missing required package verification "
+            "code for package MyApplication in MyProduct-v1.0.0-SBOM"
+        )
+        assert result.semantic_valid is False
+
+    def test_package_verification_code_present_when_files_analyzed(self):
+        """Test when filesAnalyzed is true and the package verification code is present."""
+        validator = SemanticValidator()
+
+        spdx_data = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "name": "MyProduct-v1.0.0-SBOM",
+            "packages": [
+                {
+                    "SPDXID": "SPDXRef-Package-MyApp",
+                    "name": "MyApplication",
+                    "filesAnalyzed": True,
+                    "packageVerificationCode": {
+                        "packageVerificationCodeValue": (
+                            "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+                        )
+                    },
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-Package-MyApp",
+                }
+            ],
+        }
+
+        result = validator.validate(spdx_data)
+
+        assert len(result.messages) == 0
+        assert result.is_valid
+        assert result.semantic_valid
