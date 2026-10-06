@@ -416,3 +416,104 @@ def test_document_namespace_fragment_prohibited():
     assert len(fragment_errors) > 0, (
         "Fragment identifiers should be prohibited in documentNamespace"
     )
+
+
+def test_unknown_license_symbols_accepts_valid_expressions():
+    """Valid SPDX ids, compound expressions, and sentinels are accepted."""
+    engine = SbomCheckEngine()
+
+    for value in [
+        "MIT",
+        "MIT OR Apache-2.0",
+        "GPL-2.0-only WITH Classpath-exception-2.0",
+        "NOASSERTION",
+        "NONE",
+        "",
+    ]:
+        assert engine._unknown_license_symbols(value, set()) == [], value
+
+
+def test_unknown_license_symbols_rejects_free_text():
+    """Free-form license names that are not SPDX ids are reported."""
+    engine = SbomCheckEngine()
+
+    assert engine._unknown_license_symbols("BSD", set()) == ["BSD"]
+    assert engine._unknown_license_symbols("Public Domain", set()) == ["Public Domain"]
+
+
+def test_unknown_license_symbols_rejects_malformed_expression():
+    """A syntactically malformed expression is reported as invalid."""
+    engine = SbomCheckEngine()
+
+    assert engine._unknown_license_symbols("MIT AND", set()) == ["MIT AND"]
+    assert engine._unknown_license_symbols("(MIT", set()) == ["(MIT"]
+
+
+def test_unknown_license_symbols_license_ref_requires_declaration():
+    """A LicenseRef- id is accepted only when declared, otherwise reported."""
+    engine = SbomCheckEngine()
+
+    declared = {"LicenseRef-foo"}
+    assert engine._unknown_license_symbols("LicenseRef-foo", declared) == []
+    assert engine._unknown_license_symbols("MIT AND LicenseRef-foo", declared) == []
+    assert engine._unknown_license_symbols("LicenseRef-bar", declared) == [
+        "LicenseRef-bar"
+    ]
+    assert engine._unknown_license_symbols("LicenseRef-foo", set()) == [
+        "LicenseRef-foo"
+    ]
+
+
+def test_validate_package_licenses_reports_invalid_fields():
+    """Invalid licenseConcluded/licenseDeclared values produce errors."""
+    engine = SbomCheckEngine()
+    result = SbomCheckResult(overall_valid=True, spdx_valid=True, profile_valid=True)
+
+    package = {
+        "SPDXID": "SPDXRef-Package-0",
+        "licenseConcluded": "MIT",
+        "licenseDeclared": "Public Domain",
+    }
+    engine._validate_package_licenses(package, 0, set(), result)
+
+    errors = [
+        msg for msg in result.messages if msg.rule_id == "invalid_license_expression"
+    ]
+    assert len(errors) == 1
+    assert "licenseDeclared" in errors[0].field_path
+
+
+def test_validate_package_licenses_skips_missing_fields():
+    """Packages without license fields produce no license errors."""
+    engine = SbomCheckEngine()
+    result = SbomCheckResult(overall_valid=True, spdx_valid=True, profile_valid=True)
+
+    engine._validate_package_licenses({"SPDXID": "SPDXRef-Package-0"}, 0, set(), result)
+
+    assert result.messages == []
+
+
+def test_validate_package_requirements_validates_licenses_in_default_profile():
+    """The default profile flags invalid license expressions on packages."""
+    engine = SbomCheckEngine()  # default profile
+    result = SbomCheckResult(overall_valid=True, spdx_valid=True, profile_valid=True)
+
+    spdx_data = {
+        "packages": [
+            {
+                "SPDXID": "SPDXRef-Package-0",
+                "name": "pkg",
+                "licenseConcluded": "NotA License",
+                "licenseDeclared": "LicenseRef-custom",
+            }
+        ],
+        "hasExtractedLicensingInfos": [{"licenseId": "LicenseRef-custom"}],
+    }
+    engine._validate_package_requirements(spdx_data, result)
+
+    license_errors = [
+        msg for msg in result.messages if msg.rule_id == "invalid_license_expression"
+    ]
+    # Only the free-text licenseConcluded is invalid; the declared LicenseRef- is fine.
+    assert len(license_errors) == 1
+    assert "licenseConcluded" in license_errors[0].field_path

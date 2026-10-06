@@ -9,12 +9,29 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from license_expression import get_spdx_licensing
+
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.models import SbomCheckResult, ValidationSeverity
 from spdx_validator.engine import ValidationEngine
 
 if TYPE_CHECKING:
+    from license_expression import Licensing
+
     from sbom_check.config.models import SbomCheckConfig
+
+# SPDX sentinel values that are legal in license fields but are not license keys.
+_LICENSE_SENTINELS = {"NOASSERTION", "NONE"}
+
+_LICENSING: Licensing | None = None
+
+
+def _licensing() -> Licensing:
+    """Return a cached SPDX licensing parser (building one is expensive)."""
+    global _LICENSING  # noqa: PLW0603  # pylint: disable=global-statement
+    if _LICENSING is None:
+        _LICENSING = get_spdx_licensing()
+    return _LICENSING
 
 
 class SbomCheckEngine:
@@ -255,9 +272,84 @@ class SbomCheckEngine:
         if pkg_config.build_tools.require_build_tools:
             self._validate_build_tools_coverage(packages, result)
 
+        # Pre-compute declared LicenseRef- ids once for license validation.
+        declared_license_refs = {
+            info["licenseId"]
+            for info in spdx_data.get("hasExtractedLicensingInfos", [])
+            if isinstance(info, dict) and "licenseId" in info
+        }
+
         # Validate each package
         for i, package in enumerate(packages):
             self._validate_single_package(package, i, result)
+            if pkg_config.validate_license_expressions:
+                self._validate_package_licenses(
+                    package, i, declared_license_refs, result
+                )
+
+    def _validate_package_licenses(
+        self,
+        package: dict[str, Any],
+        index: int,
+        declared_license_refs: set[str],
+        result: SbomCheckResult,
+    ) -> None:
+        """Validate that package license fields are valid SPDX expressions.
+
+        Each of ``licenseConcluded`` and ``licenseDeclared`` must be a valid SPDX
+        license expression, the sentinels ``NOASSERTION``/``NONE``, or reference a
+        ``LicenseRef-`` id declared in ``hasExtractedLicensingInfos``.
+        """
+        package_id = self._get_package_identifier(package, index)
+
+        for field in ("licenseConcluded", "licenseDeclared"):
+            if (value := package.get(field)) is None:
+                continue
+
+            if unknown := self._unknown_license_symbols(value, declared_license_refs):
+                result.add_message(
+                    ValidationSeverity.ERROR,
+                    f"{package_id}: Field '{field}' is not a valid SPDX license "
+                    f"expression (unknown: {', '.join(unknown)})",
+                    rule_id="invalid_license_expression",
+                    field_path=f"packages[{index}].{field}",
+                    found_value=value,
+                    remediation=(
+                        "Use a valid SPDX license expression, 'NOASSERTION'/'NONE', "
+                        "or a 'LicenseRef-' declared in hasExtractedLicensingInfos"
+                    ),
+                )
+
+    def _unknown_license_symbols(
+        self, value: str, declared_license_refs: set[str]
+    ) -> list[str]:
+        """Return license symbols in ``value`` that are not valid SPDX ids.
+
+        Declared ``LicenseRef-`` ids are treated as known. An empty list means the
+        expression is acceptable.
+        """
+        text = str(value).strip()
+        if not text or text in _LICENSE_SENTINELS:
+            return []
+
+        licensing = _licensing()
+
+        # Parse first to catch syntax errors; validate() cannot report unknown-key
+        # symbols for a syntactically invalid expression (and raises on some).
+        try:
+            licensing.parse(text, validate=False, strict=False)
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Any parse failure means the expression is syntactically invalid.
+            return [text]
+
+        info = licensing.validate(text)
+        return [
+            symbol
+            for symbol in info.invalid_symbols
+            if not (
+                symbol.startswith("LicenseRef-") and symbol in declared_license_refs
+            )
+        ]
 
     def _validate_build_tools_coverage(
         self, packages: list[dict[str, Any]], result: SbomCheckResult
