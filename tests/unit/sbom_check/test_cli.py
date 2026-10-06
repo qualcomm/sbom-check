@@ -1004,3 +1004,12 @@ def test_json_output_includes_detected_format_and_specification():
     output = mocked_console.print.call_args.args[0]
     assert '"document_format": "CycloneDX"' in output
     assert '"spec_version": "1.7"' in output
+
+
+def test_collect_sbom_files_deduplicates_brace_matches(tmp_path):
+    document = tmp_path / "bom.spdx.json"
+    document.write_text("{}")
+
+    files = collect_sbom_files((tmp_path,), recursive=False, pattern="*.{spdx,spdx}.json")
+
+    assert files == [document.resolve()]

@@ -119,7 +119,7 @@ def collect_sbom_files(
             console.print(f"[yellow]Warning: {path} is neither a file nor directory[/yellow]")
 
     # Sort for consistent output
-    return sorted(files)
+    return sorted(set(files))
 
 
 def validate_single_file(

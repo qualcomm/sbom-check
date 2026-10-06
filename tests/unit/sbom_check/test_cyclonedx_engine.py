@@ -90,6 +90,16 @@ def test_invalid_json_returns_validation_message() -> None:
     assert result.messages[0].rule_id == "json_parse_error"
 
 
+def test_unsupported_version_returns_validation_message() -> None:
+    result = CycloneDXValidationEngine().validate_json_string(
+        '{"bomFormat":"CycloneDX","specVersion":"1.2"}'
+    )
+
+    assert not result.is_valid
+    assert result.messages[0].rule_id == "unsupported_version"
+    assert "1.2" in result.messages[0].message
+
+
 def test_cyclonedx_semantic_validator_is_explicit_todo() -> None:
     result = SemanticValidator().validate(_valid_document(), "1.7")
 

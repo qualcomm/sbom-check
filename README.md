@@ -292,7 +292,7 @@ fi
 
 ## CLI Tools
 
-This project provides two complementary CLI tools:
+This project provides three complementary CLI tools:
 
 ### sbom-check
 Comprehensive SBOM validation with configurable requirements and profiles.

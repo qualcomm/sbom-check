@@ -27,7 +27,7 @@ def collect_cyclonedx_files(paths: tuple[Path, ...], recursive: bool, pattern: s
             files.extend(path.rglob(pattern) if recursive else path.glob(pattern))
         else:
             click.echo(f"Warning: {path} is neither a file nor directory", err=True)
-    return sorted(path.resolve() for path in files)
+    return sorted({path.resolve() for path in files})
 
 
 def validate_single_file(file_path: Path) -> tuple[Path, CycloneDXValidationResult]:
@@ -100,7 +100,7 @@ def output_text(results: list[tuple[Path, CycloneDXValidationResult]]) -> None:
 @click.option("--output-format", type=click.Choice(["text", "json"]), default="text")
 @click.option("--recursive", "-r", is_flag=True)
 @click.option("--pattern", default="*.json")
-@click.option("--jobs", "-j", type=int, default=None)
+@click.option("--jobs", "-j", type=click.IntRange(min=1), default=None)
 def main(paths: tuple[Path, ...], output_format: str, recursive: bool, pattern: str, jobs: int | None) -> None:
     """Validate CycloneDX JSON documents against their declared schemas."""
     if not (files := collect_cyclonedx_files(paths, recursive, pattern)):

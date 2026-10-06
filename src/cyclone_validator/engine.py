@@ -49,9 +49,21 @@ class CycloneDXValidationEngine(ValidatorEngine):
         semantic_valid = True
 
         if self.enable_schema_validation and self.schema_validator:
-            schema_result = self.schema_validator.validate(
-                document, spec_version
-            )
+            try:
+                schema_result = self.schema_validator.validate(
+                    document, spec_version
+                )
+            except ValueError as error:
+                return CycloneDXValidationResult(
+                    is_valid=False,
+                    messages=[
+                        ValidationMessage(
+                            severity=ValidationSeverity.ERROR,
+                            message=str(error),
+                            rule_id="unsupported_version",
+                        )
+                    ],
+                )
             messages.extend(schema_result.messages)
             schema_valid = schema_result.is_valid
 

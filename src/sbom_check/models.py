@@ -142,16 +142,15 @@ class SbomCheckResult(BaseModel):
         core_valid = getattr(core_result, "is_valid", False)
         is_spdx_document = document_format is DocumentFormat.SPDX
         spdx_valid = core_valid if is_spdx_document else None
-        profile_valid = (
-            profile_result.overall_valid if profile_result else None
-        )
-        profile_status = (
-            ProfileStatus.PASSED
-            if profile_result and profile_valid
-            else ProfileStatus.FAILED
-            if profile_result
-            else ProfileStatus.NOT_APPLICABLE
-        )
+        profile_valid: bool | None
+        if is_spdx_document:
+            profile_valid = profile_result.overall_valid if profile_result else True
+            profile_status = (
+                ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
+            )
+        else:
+            profile_valid = profile_result.overall_valid if profile_result else None
+            profile_status = ProfileStatus.NOT_APPLICABLE
         overall_valid = (
             core_valid
             and (profile_result is None or profile_result.overall_valid)

@@ -5,9 +5,10 @@
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
-from cyclone_validator.cli import main
+from cyclone_validator.cli import collect_cyclonedx_files, main
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "cyclonedx"
 
@@ -100,3 +101,22 @@ def test_recursive_validation_reports_summary_counts(tmp_path):
         "valid.json",
     ]
 
+@pytest.mark.parametrize("jobs", ["0", "-1"])
+def test_jobs_must_be_positive(tmp_path, jobs):
+    input_directory = tmp_path / "documents"
+    input_directory.mkdir()
+
+    result = invoke_cli("--jobs", jobs, "--recursive", str(input_directory))
+
+    assert result.exit_code == 2
+    assert "Invalid value for" in result.output
+    assert jobs in result.output
+
+
+def test_collection_deduplicates_paths(tmp_path):
+    document = tmp_path / "document.json"
+    document.write_text("{}")
+
+    files = collect_cyclonedx_files((document, tmp_path), recursive=False, pattern="*.json")
+
+    assert files == [document.resolve()]
