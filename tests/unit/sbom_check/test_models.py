@@ -3,12 +3,29 @@
 
 """Unit tests for data models."""
 
+from types import SimpleNamespace
+
+import pytest
+
 from sbom_check.models import (
+    ProfileStatus,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
     ValidationSummary,
 )
+
+
+def test_sbom_check_result_combine_accepts_deprecated_spdx_result():
+    """The old keyword remains supported with a deprecation warning."""
+    core_result = SimpleNamespace(is_valid=True, messages=[])
+
+    with pytest.warns(DeprecationWarning, match="spdx_result is deprecated"):
+        result = SbomCheckResult.combine(spdx_result=core_result)
+
+    assert result.core_valid is True
+    assert result.profile_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
 
 
 def test_validation_message_creation():

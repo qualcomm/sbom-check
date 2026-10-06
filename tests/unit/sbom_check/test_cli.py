@@ -4,12 +4,123 @@
 """Unit tests for CLI module."""
 
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import pytest
 from click.testing import CliRunner
 
-from sbom_check.cli import main
+from sbom_check.cli import (
+    _expand_pattern,
+    _print_json_result,
+    _print_text_result,
+    collect_sbom_files,
+    main,
+)
+
+
+def test_expand_pattern_supports_multiple_brace_groups():
+    """Brace groups expand recursively rather than leaving later groups literal."""
+    assert _expand_pattern("*.{a,b}.{c,d}.json") == (
+        "*.a.c.json",
+        "*.a.d.json",
+        "*.b.c.json",
+        "*.b.d.json",
+    )
+
+
+def test_expand_pattern_supports_empty_alternatives():
+    """Empty brace alternatives remain valid shell-style expansions."""
+    assert _expand_pattern("*.{spdx,}.json") == ("*.spdx.json", "*..json")
+
+
+def test_expand_pattern_rejects_unmatched_closing_brace():
+    """Malformed brace ordering produces a clear validation error."""
+    with pytest.raises(ValueError, match=r"unmatched '\}'"):
+        _expand_pattern("*.}a{.json")
+
+
+
+def test_cli_reports_malformed_pattern_without_traceback(tmp_path):
+    """Malformed --pattern input is reported as a user-facing CLI error."""
+    result = CliRunner().invoke(
+        main,
+        ["--pattern", "*.}a{.json", str(tmp_path)],
+    )
+
+    assert result.exit_code == 3
+    assert "Error: Invalid brace pattern" in result.output
+    assert "Traceback" not in result.output
+
+
+
+@pytest.mark.parametrize(
+    ("pattern", "expected"),
+    [
+        ("*.json", ("*.json",)),
+        ("*.{a,b}.json", ("*.a.json", "*.b.json")),
+        (
+            "*.{a,b}.{c,d}.json",
+            ("*.a.c.json", "*.a.d.json", "*.b.c.json", "*.b.d.json"),
+        ),
+        ("x{a,{b,c}}y", ("xay", "xby", "xcy")),
+        ("*.{spdx,}.json", ("*.spdx.json", "*..json")),
+        ("{BOOT}.*.{spdx,cdx}.json", ("BOOT.*.spdx.json", "BOOT.*.cdx.json")),
+        ("{}", ("",)),
+        ("{foo,bar}[0-9]?.json", ("foo[0-9]?.json", "bar[0-9]?.json")),
+        ("{a,a}.{b,b}", ("a.b", "a.b", "a.b", "a.b")),
+    ],
+)
+def test_expand_pattern_matrix(pattern, expected):
+    """Representative glob syntax expands without losing literal characters."""
+    assert _expand_pattern(pattern) == expected
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "*.}a{.json",
+        "*.{a,b.json",
+        "*.a}b",
+        "{a,{b,c}",
+        "{a,b}}",
+        "a{b{c}",
+    ],
+)
+def test_expand_pattern_rejects_malformed_patterns(pattern):
+    """Every malformed brace shape raises a useful error for the full pattern."""
+    with pytest.raises(ValueError, match=re.escape(f"Invalid brace pattern {pattern!r}")):
+        _expand_pattern(pattern)
+
+
+def test_expand_pattern_rejects_pathological_expansion():
+    """Brace expansion is bounded for hostile or accidental combinatorial input."""
+    pattern = "".join("{a,b}" for _ in range(11))
+    with pytest.raises(ValueError, match="more than 1024 patterns"):
+        _expand_pattern(pattern)
+
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    [
+        "*.}a{.json",
+        "*.{a,b.json",
+        "*.a}b",
+        "{a,{b,c}",
+        "{a,b}}",
+        "a{b{c}",
+    ],
+)
+def test_cli_rejects_invalid_patterns_without_traceback(tmp_path, pattern):
+    """Invalid --pattern values fail cleanly at the CLI boundary."""
+    result = CliRunner().invoke(main, ["--pattern", pattern, str(tmp_path)])
+
+    assert result.exit_code == 3
+    assert "Error: Invalid brace pattern" in result.output
+    assert "Traceback" not in result.output
 
 
 def test_cli_help():
@@ -18,10 +129,11 @@ def test_cli_help():
     result = runner.invoke(main, ["--help"])
 
     assert result.exit_code == 0
-    assert "Validate SPDX 2.3 SBOM documents" in result.output
+    assert "Validate SPDX and CycloneDX JSON SBOM documents" in result.output
     assert "--profile" in result.output
     assert "--config" in result.output
     assert "--output-format" in result.output
+    assert "default: *.{spdx,cdx}.json" in result.output
 
 
 def test_cli_version():
@@ -519,6 +631,17 @@ def test_cli_validate_directory_recursive(mock_engine_class, tmp_path):
     assert "3 valid" in result.output
 
 
+def test_default_scan_pattern_includes_spdx_and_cyclonedx(tmp_path):
+    (tmp_path / "bom.spdx.json").write_text("{}")
+    (tmp_path / "bom.cdx.json").write_text("{}")
+    (tmp_path / "config.json").write_text("{}")
+    (tmp_path / "settings.json").write_text("{}")
+
+    files = collect_sbom_files((tmp_path,), recursive=False, pattern="*.{spdx,cdx}.json")
+
+    assert [file.name for file in files] == ['bom.cdx.json', 'bom.spdx.json']
+
+
 def test_cli_validate_custom_pattern(tmp_path):
     """Test custom file patterns."""
     runner = CliRunner()
@@ -833,3 +956,60 @@ def test_cli_backward_compatibility_single_file(tmp_path):
         assert test_file.name in result.output
         # Should NOT show multiple-file summary format
         assert "Validated 1 files:" not in result.output
+
+
+def _format_result(document_format: str, spec_version: str) -> SimpleNamespace:
+    """Create a minimal result for output rendering tests."""
+    return SimpleNamespace(
+        overall_valid=True,
+        document_format=document_format,
+        spec_version=spec_version,
+        spdx_valid=True,
+        profile_valid=True,
+        profile_name=None,
+        file_path=None,
+        messages=[],
+        summary=SimpleNamespace(
+            errors=0,
+            warnings=0,
+            info=0,
+            total_rules=0,
+            passed_rules=0,
+            failed_rules=0,
+        ),
+        get_messages_by_severity=lambda severity: [],
+    )
+
+
+def test_text_output_uses_detected_format_and_marks_profile_not_applicable():
+    """CycloneDX output must not use SPDX labels or profile status."""
+    result = _format_result("CycloneDX", "1.7")
+
+    with patch("sbom_check.cli.console") as mocked_console:
+        _print_text_result(result, "bom.json")
+
+    output = "\n".join(str(call.args[0]) for call in mocked_console.print.call_args_list)
+    assert "CycloneDX 1.7 Validation: PASSED" in output
+    assert "Profile Validation: NOT APPLICABLE" in output
+    assert "SPDX 2.3 Validation" not in output
+
+
+def test_json_output_includes_detected_format_and_specification():
+    """JSON output exposes format-neutral metadata."""
+    result = _format_result("CycloneDX", "1.7")
+
+    with patch("sbom_check.cli.console") as mocked_console:
+        _print_json_result(result)
+
+    output = mocked_console.print.call_args.args[0]
+    assert '"document_format": "CycloneDX"' in output
+    assert '"spec_version": "1.7"' in output
+
+
+def test_collect_sbom_files_deduplicates_brace_matches(tmp_path):
+    document = tmp_path / "bom.spdx.json"
+    document.write_text("{}")
+
+    files = collect_sbom_files((tmp_path,), recursive=False, pattern="*.{spdx,spdx}.json")
+
+    assert files == [document.resolve()]

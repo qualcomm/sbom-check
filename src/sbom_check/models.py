@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from enum import Enum
 from typing import Any
+from warnings import warn as warn_deprecated
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +18,22 @@ class ValidationSeverity(str, Enum):
     ERROR = "ERROR"
     WARNING = "WARNING"
     INFO = "INFO"
+
+
+class DocumentFormat(str, Enum):
+    """Supported SBOM document formats."""
+
+    SPDX = "SPDX"
+    CYCLONEDX = "CycloneDX"
+    UNKNOWN = "unknown"
+
+
+class ProfileStatus(str, Enum):
+    """Applicability and outcome of profile validation."""
+
+    PASSED = "passed"
+    FAILED = "failed"
+    NOT_APPLICABLE = "not_applicable"
 
 
 class ValidationMessage(BaseModel):
@@ -72,27 +89,49 @@ class ValidationSummary(BaseModel):
 
 
 class SbomCheckResult(BaseModel):
-    """Complete validation result combining SPDX and custom validation."""
+    """Complete validation result combining core validation and profile results."""
 
     overall_valid: bool
-    spdx_valid: bool
-    profile_valid: bool
+    spdx_valid: bool | None
+    profile_valid: bool | None
+    core_valid: bool = False
+    profile_status: ProfileStatus = ProfileStatus.NOT_APPLICABLE
     messages: list[ValidationMessage] = Field(default_factory=list)
     summary: ValidationSummary = Field(default_factory=ValidationSummary)
     profile_name: str | None = None
     file_path: str | None = None
+    document_format: DocumentFormat = DocumentFormat.UNKNOWN
+    spec_version: str | None = None
 
     @classmethod
-    def combine(
+    def combine(  # pylint: disable=too-many-positional-arguments,too-many-locals  # noqa: PLR0917,RUF100
         cls,
-        spdx_result: Any,  # spdx_validator.ValidationResult
+        core_result: Any = None,  # core validator result
         profile_result: SbomCheckResult | None = None,
         profile_name: str | None = None,
         file_path: str | None = None,
+        document_format: DocumentFormat = DocumentFormat.SPDX,
+        spec_version: str | None = "2.3",
+        *,
+        spdx_result: Any = None,
     ) -> SbomCheckResult:
-        """Combine SPDX validation result with profile validation result."""
+        """Combine core validation result with profile validation result.
+
+        ``spdx_result`` is deprecated; use ``core_result`` instead.
+        """
+        if core_result is not None and spdx_result is not None:
+            raise TypeError("Pass either core_result or spdx_result, not both")
+        if spdx_result is not None:
+            warn_deprecated(
+                "spdx_result is deprecated; use core_result instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            core_result = spdx_result
+        if core_result is None:
+            raise TypeError("Missing required argument: core_result")
         # Convert and collect all messages
-        messages = cls._convert_spdx_messages(spdx_result)
+        messages = cls._convert_validation_messages(core_result)
         if profile_result:
             messages.extend(profile_result.messages)
 
@@ -100,30 +139,47 @@ class SbomCheckResult(BaseModel):
         summary = cls._calculate_summary(messages)
 
         # Determine validity
-        spdx_valid = getattr(spdx_result, "is_valid", False)
-        profile_valid = profile_result.overall_valid if profile_result else True
-        overall_valid = spdx_valid and profile_valid and summary.errors == 0
-
+        core_valid = getattr(core_result, "is_valid", False)
+        is_spdx_document = document_format is DocumentFormat.SPDX
+        spdx_valid = core_valid if is_spdx_document else None
+        profile_valid: bool | None
+        if is_spdx_document:
+            profile_valid = profile_result.overall_valid if profile_result else True
+            profile_status = (
+                ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
+            )
+        else:
+            profile_valid = profile_result.overall_valid if profile_result else None
+            profile_status = ProfileStatus.NOT_APPLICABLE
+        overall_valid = (
+            core_valid
+            and (profile_result is None or profile_result.overall_valid)
+            and summary.errors == 0
+        )
         return cls(
             overall_valid=overall_valid,
             spdx_valid=spdx_valid,
             profile_valid=profile_valid,
+            core_valid=core_valid,
+            profile_status=profile_status,
             messages=messages,
             summary=summary,
-            profile_name=profile_name,
+            profile_name=profile_name if is_spdx_document else None,
             file_path=file_path,
+            document_format=document_format,
+            spec_version=spec_version,
         )
 
     @classmethod
-    def _convert_spdx_messages(cls, spdx_result: Any) -> list[ValidationMessage]:
-        """Convert spdx-validator messages to our format."""
+    def _convert_validation_messages(cls, core_result: Any) -> list[ValidationMessage]:
+        """Convert validation messages to our format."""
         messages: list[ValidationMessage] = []
 
-        if hasattr(spdx_result, "messages"):
-            for spdx_msg in spdx_result.messages:
+        if hasattr(core_result, "messages"):
+            for raw_message in core_result.messages:
                 # Determine severity level
-                if hasattr(spdx_msg, "severity"):
-                    severity_value = spdx_msg.severity.value.upper()
+                if hasattr(raw_message, "severity"):
+                    severity_value = raw_message.severity.value.upper()
                     if severity_value == "WARNING":
                         severity_level = ValidationSeverity.WARNING
                     elif severity_value == "INFO":
@@ -133,13 +189,13 @@ class SbomCheckResult(BaseModel):
                 else:
                     severity_level = ValidationSeverity.ERROR
 
-                validation_msg = ValidationMessage(
+                converted_message = ValidationMessage(
                     severity=severity_level,
-                    message=spdx_msg.message,
-                    rule_id=getattr(spdx_msg, "rule_id", None),
-                    field_path=getattr(spdx_msg, "path", None),
+                    message=raw_message.message,
+                    rule_id=getattr(raw_message, "rule_id", None),
+                    field_path=getattr(raw_message, "field_path", getattr(raw_message, "path", None)),
                 )
-                messages.append(validation_msg)
+                messages.append(converted_message)
 
         return messages
 
@@ -164,7 +220,7 @@ class SbomCheckResult(BaseModel):
             failed_rules=failed_rules,
         )
 
-    def add_message(  # pylint: disable=too-many-positional-arguments  # noqa: PLR0917
+    def add_message(  # pylint: disable=too-many-positional-arguments  # noqa: PLR0917,RUF100
         self,
         severity: ValidationSeverity,
         message: str,

@@ -6,16 +6,16 @@ SPDX-License-Identifier: BSD-3-Clause
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 
-A comprehensive SPDX 2.3 SBOM validator with configurable additional requirements for completeness validation.
+A multi-format SBOM validator supporting SPDX 2.3 and CycloneDX JSON documents. SPDX documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation.
 
 ## Features
 
-- **SPDX 2.3 Compliance**: Integrated spdx-validator for core specification validation
-- **Dual CLI Tools**: Both `sbom-check` and `spdx-validate` commands available
+- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.3–1.7 documents
+- **CLI Tools**: Both `sbom-check`, `spdx-validate`, and `cyclonedx-validate` commands available
 - **Configurable Requirements**: YAML-based configuration system with inheritance
 - **Multiple Profiles**: Built-in profiles for different use cases (basic, default, automotive, etc.)
 - **Rich Reporting**: Text and JSON output formats with detailed error messages
-- **Schema Validation**: JSON Schema validation against SPDX specification
+- **Schema Validation**: JSON Schema validation against the declared document format and version
 - **Extensible**: Plugin system for custom validation rules
 
 ## Quick Start
@@ -89,6 +89,33 @@ uv run sbom-check --output-format json my-sbom.spdx.json
 uv run spdx-validate --output-format json my-sbom.spdx.json
 ```
 
+## CycloneDX JSON Validation
+
+Validate a CycloneDX JSON document with the same command used for SPDX documents:
+
+```bash
+uv run sbom-check supplier-bom.cdx.json
+```
+
+SBOM-Check supports CycloneDX JSON versions 1.3, 1.4, 1.5, 1.6, and 1.7. The document's `specVersion` selects the corresponding schema bundled with `cyclonedx-python-lib`; validation does not require network access. JSON Schema validation rejects additional properties as schema errors. These violations make the document invalid (`core_valid: false` and `overall_valid: false`). CycloneDX XML is not supported.
+
+CycloneDX validation is currently limited to structural JSON Schema validation. SPDX-specific Qualcomm completeness and profile checks are not applied to CycloneDX documents. Results therefore report `profile_status: "not_applicable"`, with `core_valid` indicating schema status. CycloneDX semantic, completeness, and business validation are planned separately.
+
+Example JSON result:
+
+```json
+{
+  "document_format": "CycloneDX",
+  "spec_version": "1.7",
+  "overall_valid": true,
+  "core_valid": true,
+  "profile_status": "not_applicable",
+  "spdx_valid": null,
+  "profile_valid": null
+}
+```
+
+
 ## Configuration Profiles
 
 ### Basic SPDX Profile
@@ -153,6 +180,7 @@ SBOM-Check includes an integrated spdx-validator library that provides:
 
 - **Core SPDX 2.3 Validation**: JSON Schema validation against official SPDX specification
 - **Standalone CLI**: `spdx-validate` command for direct SPDX validation
+- **Standalone CycloneDX CLI**: `cyclonedx-validate` command for direct CycloneDX JSON schema validation
 - **Library Integration**: Used internally by SBOM-Check for base validation
 - **Unified Results**: Combined validation results with detailed error reporting
 
@@ -206,6 +234,8 @@ Recursively scan directories for SBOM files:
 ```bash
 uv run sbom-check --recursive project-root/
 ```
+
+Directory scans default to `*.{spdx,cdx}.json` so unrelated JSON files are ignored. Use `--pattern` to select a different file pattern when needed.
 
 Use custom file pattern:
 ```bash
@@ -262,7 +292,7 @@ fi
 
 ## CLI Tools
 
-This project provides two complementary CLI tools:
+This project provides three complementary CLI tools:
 
 ### sbom-check
 Comprehensive SBOM validation with configurable requirements and profiles.
@@ -275,13 +305,21 @@ Options:
   --config PATH                Custom configuration file to use
   --output-format [text|json]  Output format (default: text)
   -r, --recursive              Recursively scan directories for SBOM files
-  --pattern TEXT               File pattern to match when scanning directories (default: *.spdx.json)
+  --pattern TEXT               File pattern to match when scanning directories (default: *.{spdx,cdx}.json)
   -j, --jobs INTEGER           Number of parallel jobs for validation (default: number of CPU cores)
   --list-profiles              List available configuration profiles
   --generate-config            Generate a configuration template
   --validate-config PATH       Validate a configuration file
   --version                    Show the version and exit.
   --help                       Show this message and exit.
+```
+
+### cyclonedx-validate
+
+Direct CycloneDX JSON schema validation for versions 1.3–1.7. Semantic and Qualcomm completeness validation are not performed.
+
+```bash
+uv run cyclonedx-validate --output-format json supplier-bom.cdx.json
 ```
 
 ### spdx-validate

@@ -4,11 +4,13 @@
 """Unit tests for SBOM validation engine."""
 
 import json
+from copy import deepcopy
 from unittest.mock import Mock, patch
 
+from cyclone_validator.engine import CycloneDXValidationEngine
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import SbomCheckResult, ValidationSeverity
+from sbom_check.models import ProfileStatus, SbomCheckResult, ValidationSeverity
 
 
 def test_engine_initialization():
@@ -416,3 +418,111 @@ def test_document_namespace_fragment_prohibited():
     assert len(fragment_errors) > 0, (
         "Fragment identifiers should be prohibited in documentNamespace"
     )
+
+
+def test_engine_instantiates_selected_validator_class():
+    """Test that the selected validator class is instantiated as engine."""
+    config = ConfigLoader().load_profile("default")
+    engine = SbomCheckEngine(config, validator_class=CycloneDXValidationEngine)
+
+    assert isinstance(engine.engine, CycloneDXValidationEngine)
+
+
+def test_cyclonedx_schema_paths_are_preserved_in_combined_result():
+    """CycloneDX JSON paths survive SbomCheckResult conversion."""
+    engine = SbomCheckEngine(
+        validator_class=CycloneDXValidationEngine,
+    )
+    result = engine.validate_dict(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.7",
+            "components": [{"type": "invalid", "name": 123}],
+        }
+    )
+
+    assert not result.overall_valid
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert result.document_format == "CycloneDX"
+    assert result.spec_version == "1.7"
+    assert result.profile_valid is None
+    assert {message.field_path for message in result.messages} >= {
+        "$.components[0].type",
+        "$.components[0].name",
+    }
+
+
+def test_engine_auto_detects_cyclonedx_without_explicit_validator_class():
+    """Direct engine callers receive automatic format dispatch."""
+    result = SbomCheckEngine().validate_dict(
+        {"bomFormat": "CycloneDX", "specVersion": "1.7"}
+    )
+
+    assert result.overall_valid
+    assert result.document_format == "CycloneDX"
+    assert result.spec_version == "1.7"
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+
+
+def test_missing_spdx_version_preserves_validator_and_profile_diagnostics(sample_valid_spdx_document):
+    document = deepcopy(sample_valid_spdx_document)
+    document.pop("spdxVersion")
+    document["packages"][0].pop("downloadLocation")
+    document["creationInfo"].pop("licenseListVersion")
+    document["relationships"] = []
+
+    result = SbomCheckEngine().validate_dict(document)
+    messages = [message.message for message in result.messages]
+
+    assert result.document_format == "SPDX"
+    assert len(messages) > 1
+    assert any("downloadLocation" in message for message in messages)
+    assert any("spdxVersion" in message for message in messages)
+    assert any("licenseListVersion" in message for message in messages)
+    assert any("DESCRIBES" in message for message in messages)
+
+
+def test_unsupported_spdx_version_preserves_validator_diagnostics(sample_invalid_spdx_document):
+    result = SbomCheckEngine().validate_dict(sample_invalid_spdx_document)
+    messages = [message.message for message in result.messages]
+
+    assert result.document_format == "SPDX"
+    assert len(messages) > 1
+    assert any("SPDX-2.2" in message or "SPDX-2.3" in message for message in messages)
+
+
+def test_cyclonedx_additional_properties_make_combined_result_invalid() -> None:
+    result = SbomCheckEngine().validate_dict({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.4",
+        "bogusRootField": True,
+        "components": [{"type": "library", "name": "example", "bogusField": True}],
+    })
+
+    assert result.document_format == "CycloneDX"
+    assert result.core_valid is False
+    assert result.overall_valid is False
+    assert result.summary.errors == 2
+    assert result.summary.warnings == 1
+    schema_messages = [
+        message for message in result.messages
+        if message.rule_id == "cyclonedx_schema_error"
+    ]
+    assert len(schema_messages) == 2
+    assert {message.field_path for message in schema_messages} == {
+        "$",
+        "$.components[0]",
+    }
+
+
+def test_engine_returns_structured_result_for_unsupported_input():
+    """Unsupported documents never fall through to SPDX validation."""
+    result = SbomCheckEngine().validate_dict({"format": "unknown"})
+
+    assert not result.overall_valid
+    assert result.document_format == "unknown"
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert result.messages[0].rule_id == "unsupported_format"

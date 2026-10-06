@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sbom-check"
 dynamic = ["version"]
-description = "SPDX 2.3 SBOM validator with configurable additional requirements for completeness validation"
+description = "multi-format SBOM validator for SPDX 2.3 and CycloneDX JSON documents"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 authors = [
@@ -33,11 +33,14 @@ dependencies = [
     "jinja2>=3.1.0",
     # spdx-validator dependencies
     "jsonschema>=4.25.1",
+    #cycloneDX dependencies
+    "cyclonedx-python-lib[json-validation]==11.12.0",
 ]
 
 [project.scripts]
 sbom-check = "sbom_check.cli:main"
 spdx-validate = "spdx_validator.cli:main"
+cyclonedx-validate = "cyclone_validator.cli:main"
 
 [dependency-groups]
 dev = [

@@ -18,38 +18,108 @@ from typing import Any
 import click
 from rich.console import Console
 
-from sbom_check.config.loader import ConfigLoader
-from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import ValidationSeverity
-
 try:
     from sbom_check._version import version as __version__
 except ImportError:
     # Fallback for development/editable installs
     __version__ = "dev"
 
+from sbom_check.config.loader import ConfigLoader
+from sbom_check.engine import SbomCheckEngine
+from sbom_check.models import ProfileStatus, ValidationSeverity
+
 console = Console()
+DEFAULT_SBOM_PATTERN = "*.{spdx,cdx}.json"
+
+
+MAX_PATTERN_EXPANSIONS = 1024
+
+
+def _expand_pattern(pattern: str) -> tuple[str, ...]:
+    """Expand brace alternatives recursively for filesystem globbing.
+
+    Empty alternatives are valid, but malformed brace ordering and unmatched
+    braces raise ``ValueError`` so the CLI can report the invalid pattern.
+    Expansion is capped to keep pathological user input bounded.
+    """
+    try:
+        return _expand_pattern_fragment(pattern)
+    except ValueError as error:
+        raise ValueError(f"Invalid brace pattern {pattern!r}: {error}") from None
+
+
+def _expand_pattern_fragment(pattern: str) -> tuple[str, ...]:
+    """Expand one pattern fragment while preserving the original error context."""
+    open_index = pattern.find("{")
+    close_index = pattern.find("}")
+    if open_index == -1 and close_index == -1:
+        return (pattern,)
+    if close_index != -1 and (open_index == -1 or close_index < open_index):
+        raise ValueError("unmatched '}'")
+
+    depth = 0
+    matching_close = None
+    for index in range(open_index, len(pattern)):
+        character = pattern[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                matching_close = index
+                break
+
+    if matching_close is None:
+        raise ValueError("unmatched '{'")
+
+    prefix = pattern[:open_index]
+    contents = pattern[open_index + 1 : matching_close]
+    suffix = pattern[matching_close + 1 :]
+
+    alternatives: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(contents):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            alternatives.append(contents[start:index])
+            start = index + 1
+    alternatives.append(contents[start:])
+
+    expanded: list[str] = []
+    for alternative in alternatives:
+        expanded.extend(_expand_pattern_fragment(f"{prefix}{alternative}{suffix}"))
+        if len(expanded) > MAX_PATTERN_EXPANSIONS:
+            raise ValueError(
+                f"expands to more than {MAX_PATTERN_EXPANSIONS} patterns"
+            )
+    return tuple(expanded)
 
 
 def collect_sbom_files(
-    paths: tuple[Path, ...], recursive: bool, pattern: str
+    paths: tuple[Path, ...], recursive: bool, pattern: str | None
 ) -> list[Path]:
     """Collect all SBOM files from the given paths."""
     files = []
+    patterns = _expand_pattern(pattern or DEFAULT_SBOM_PATTERN)
 
     for path in paths:
         if path.is_file():
             files.append(path.resolve())
         elif path.is_dir():
-            if recursive:
-                files.extend(p.resolve() for p in path.rglob(pattern))
-            else:
-                files.extend(p.resolve() for p in path.glob(pattern))
+            for current_pattern in patterns:
+                if recursive:
+                    files.extend(p.resolve() for p in path.rglob(current_pattern))
+                else:
+                    files.extend(p.resolve() for p in path.glob(current_pattern))
         else:
             console.print(f"[yellow]Warning: {path} is neither a file nor directory[/yellow]")
 
     # Sort for consistent output
-    return sorted(files)
+    return sorted(set(files))
 
 
 def validate_single_file(
@@ -66,10 +136,20 @@ def validate_single_file(
     else:
         sbom_config = loader.load_profile(profile)
 
-    # Initialize engine and validate
+    # Detection and validator selection are owned by SbomCheckEngine.
     engine = SbomCheckEngine(sbom_config)
     result = engine.validate_file(file_path)
+    _ensure_result_document_metadata(result)
     return file_path, result
+
+
+def _ensure_result_document_metadata(result: Any) -> None:
+    """Fill metadata defaults without overwriting engine-detected values."""
+    if not isinstance(getattr(result, "document_format", None), str):
+        result.document_format = "unknown"
+    spec_version = getattr(result, "spec_version", None)
+    if spec_version is not None and not isinstance(spec_version, str):
+        result.spec_version = None
 
 
 def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
@@ -79,7 +159,10 @@ def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
     invalid_files = total_files - valid_files
 
     # Color-coded summary header
-    console.print(f"Validated {total_files} files: [green]{valid_files} valid[/green], [red]{invalid_files} invalid[/red]")
+    console.print(
+        f"Validated {total_files} files: [green]{valid_files} valid[/green], "
+        f"[red]{invalid_files} invalid[/red]"
+    )
     console.print("=" * 80)
 
     for file_path, result in results:
@@ -111,6 +194,10 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
             {
                 "file": str(file_path),
                 "overall_valid": result.overall_valid,
+                "document_format": result.document_format,
+                "spec_version": result.spec_version,
+                "core_valid": _result_core_valid(result),
+                "profile_status": _result_profile_status(result).value,
                 "spdx_valid": result.spdx_valid,
                 "profile_valid": result.profile_valid,
                 "profile_name": result.profile_name,
@@ -174,8 +261,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
 )
 @click.option(
     "--pattern",
-    default="*.spdx.json",
-    help="File pattern to match when scanning directories (default: *.spdx.json)",
+    default="*.{spdx,cdx}.json",
+    help="File pattern to match when scanning directories (default: *.{spdx,cdx}.json)",
 )
 @click.option(
     "--jobs",
@@ -200,7 +287,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
     help="Validate a configuration file",
 )
 @click.version_option(version=__version__, prog_name="sbom-check")
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements  # noqa: PLR0917
+# pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements
+def main(  # noqa: PLR0917,RUF100
     paths: tuple[str, ...],
     profile: str,
     config: str | None,
@@ -212,7 +300,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
     generate_config: bool,
     validate_config: str | None,
 ) -> None:
-    """Validate SPDX 2.3 SBOM documents with configurable requirements.
+    """Validate SPDX and CycloneDX JSON SBOM documents.
 
     PATHS can be individual files or directories. When directories are provided,
     they will be scanned for SBOM files matching the specified pattern.
@@ -261,9 +349,10 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
             else:
                 sbom_config = loader.load_profile(profile)
 
-            # Initialize engine and validate
+            # Detection and validator selection are owned by SbomCheckEngine.
             engine = SbomCheckEngine(sbom_config)
             result = engine.validate_file(file_path)
+            _ensure_result_document_metadata(result)
             results.append((file_path, result))
 
             if not result.overall_valid:
@@ -366,6 +455,22 @@ def _validate_config_file(loader: ConfigLoader, config_path: str) -> None:
         sys.exit(3)
 
 
+def _result_core_valid(result: Any) -> bool:
+    """Read format-neutral core status with legacy-result compatibility."""
+    value = getattr(result, "core_valid", None)
+    return value if isinstance(value, bool) else bool(result.spdx_valid)
+
+
+def _result_profile_status(result: Any) -> ProfileStatus:
+    """Read explicit profile status with legacy-result compatibility."""
+    value = getattr(result, "profile_status", None)
+    if isinstance(value, ProfileStatus):
+        return value
+    if getattr(result, "document_format", "SPDX") == "SPDX":
+        return ProfileStatus.PASSED if bool(result.profile_valid) else ProfileStatus.FAILED
+    return ProfileStatus.NOT_APPLICABLE
+
+
 def _print_text_result(result: Any, file_path: str) -> None:
     """Print validation result in text format."""
     console.print(f"\n[bold]Validation Results for: {file_path}[/bold]")
@@ -377,14 +482,21 @@ def _print_text_result(result: Any, file_path: str) -> None:
     else:
         console.print("[red]❌ Overall Result: FAILED[/red]")
 
-    # SPDX validation status
-    if result.spdx_valid:
-        console.print("[green]✅ SPDX 2.3 Validation: PASSED[/green]")
+    format_name = getattr(result, "document_format", "SPDX")
+    format_name = getattr(format_name, "value", format_name)
+    specification = (
+        f" {result.spec_version}" if result.spec_version else ""
+    )
+    core_label = f"{format_name}{specification} Validation"
+    if _result_core_valid(result):
+        console.print(f"[green]✅ {core_label}: PASSED[/green]")
     else:
-        console.print("[red]❌ SPDX 2.3 Validation: FAILED[/red]")
+        console.print(f"[red]❌ {core_label}: FAILED[/red]")
 
-    # Profile validation status
-    if result.profile_valid:
+    profile_status = _result_profile_status(result)
+    if profile_status is ProfileStatus.NOT_APPLICABLE:
+        console.print("[blue]Info: Profile Validation: NOT APPLICABLE[/blue]")
+    elif profile_status is ProfileStatus.PASSED:
         console.print("[green]✅ Profile Validation: PASSED[/green]")
     else:
         console.print("[red]❌ Profile Validation: FAILED[/red]")
@@ -445,6 +557,10 @@ def _print_json_result(result: Any) -> None:
     # Convert result to JSON-serializable format
     json_result = {
         "overall_valid": result.overall_valid,
+        "document_format": result.document_format,
+        "spec_version": result.spec_version,
+        "core_valid": _result_core_valid(result),
+        "profile_status": _result_profile_status(result).value,
         "spdx_valid": result.spdx_valid,
         "profile_valid": result.profile_valid,
         "profile_name": result.profile_name,
