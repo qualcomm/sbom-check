@@ -18,17 +18,29 @@ from typing import Any
 import click
 from rich.console import Console
 
-from sbom_check.config.loader import ConfigLoader
-from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import ValidationSeverity
-
 try:
     from sbom_check._version import version as __version__
 except ImportError:
     # Fallback for development/editable installs
     __version__ = "dev"
 
+from sbom_check.config.loader import ConfigLoader
+from sbom_check.engine import SbomCheckEngine
+from sbom_check.models import (
+    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+    ProfileStatus,
+    ValidationSeverity,
+)
+
 console = Console()
+REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
+
+# User-facing names for document format enum values.  SPDX3 is an internal
+# identifier; the CLI should use the standard SPDX name in its output.
+FORMAT_DISPLAY_NAMES = {
+    "SPDX": "SPDX",
+    "SPDX3": "SPDX",
+}
 
 
 def collect_sbom_files(
@@ -46,7 +58,9 @@ def collect_sbom_files(
             else:
                 files.extend(p.resolve() for p in path.glob(pattern))
         else:
-            console.print(f"[yellow]Warning: {path} is neither a file nor directory[/yellow]")
+            console.print(
+                f"[yellow]Warning: {path} is neither a file nor directory[/yellow]"
+            )
 
     # Sort for consistent output
     return sorted(files)
@@ -66,10 +80,18 @@ def validate_single_file(
     else:
         sbom_config = loader.load_profile(profile)
 
-    # Initialize engine and validate
+    # Detection and validator selection are owned by SbomCheckEngine.
     engine = SbomCheckEngine(sbom_config)
     result = engine.validate_file(file_path)
     return file_path, result
+
+
+def _has_remote_resource_failure(result: Any) -> bool:
+    """Return whether validation could not run because a remote resource failed."""
+    return any(
+        getattr(message, "rule_id", None) == REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+        for message in getattr(result, "messages", [])
+    )
 
 
 def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
@@ -79,7 +101,10 @@ def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
     invalid_files = total_files - valid_files
 
     # Color-coded summary header
-    console.print(f"Validated {total_files} files: [green]{valid_files} valid[/green], [red]{invalid_files} invalid[/red]")
+    console.print(
+        f"Validated {total_files} files: [green]{valid_files} valid[/green], "
+        f"[red]{invalid_files} invalid[/red]"
+    )
     console.print("=" * 80)
 
     for file_path, result in results:
@@ -90,11 +115,15 @@ def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
     # Color-coded overall summary
     console.print("=" * 80)
     if valid_files == total_files:
-        summary_text = f"[green]Overall: {valid_files}/{total_files} files valid ✅[/green]"
+        summary_text = (
+            f"[green]Overall: {valid_files}/{total_files} files valid ✅[/green]"
+        )
     elif valid_files == 0:
         summary_text = f"[red]Overall: {valid_files}/{total_files} files valid ❌[/red]"
     else:
-        summary_text = f"[yellow]Overall: {valid_files}/{total_files} files valid ⚠️[/yellow]"
+        summary_text = (
+            f"[yellow]Overall: {valid_files}/{total_files} files valid ⚠️[/yellow]"
+        )
 
     console.print(summary_text)
 
@@ -105,12 +134,18 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
         "summary": {
             "total_files": len(results),
             "valid_files": sum(1 for _, result in results if result.overall_valid),
-            "invalid_files": sum(1 for _, result in results if not result.overall_valid),
+            "invalid_files": sum(
+                1 for _, result in results if not result.overall_valid
+            ),
         },
         "results": [
             {
                 "file": str(file_path),
                 "overall_valid": result.overall_valid,
+                "document_format": result.document_format,
+                "spec_version": result.spec_version,
+                "core_valid": result.core_valid,
+                "profile_status": result.profile_status.value,
                 "spdx_valid": result.spdx_valid,
                 "profile_valid": result.profile_valid,
                 "profile_name": result.profile_name,
@@ -128,6 +163,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
                         "message": msg.message,
                         "rule_id": msg.rule_id,
                         "field_path": msg.field_path,
+                        "json_path": msg.json_path,
+                        "affected_element": msg.affected_element,
                         "section_reference": msg.section_reference,
                         "found_value": msg.found_value,
                         "expected_value": msg.expected_value,
@@ -180,7 +217,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
 @click.option(
     "--jobs",
     "-j",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Number of parallel jobs for validation (default: number of CPU cores)",
 )
@@ -200,7 +237,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
     help="Validate a configuration file",
 )
 @click.version_option(version=__version__, prog_name="sbom-check")
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements  # noqa: PLR0917
+def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements # noqa: PLR0917,RUF100
     paths: tuple[str, ...],
     profile: str,
     config: str | None,
@@ -212,7 +249,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
     generate_config: bool,
     validate_config: str | None,
 ) -> None:
-    """Validate SPDX 2.3 SBOM documents with configurable requirements.
+    """Validate SPDX SBOM documents, with configurable requirements for SPDX 2.3.
 
     PATHS can be individual files or directories. When directories are provided,
     they will be scanned for SBOM files matching the specified pattern.
@@ -250,6 +287,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
         # Validate all files (in parallel if multiple files)
         results = []
         overall_valid = True
+        remote_resource_failure = False
 
         if len(files_to_validate) == 1:
             # Single file - no need for parallel processing
@@ -261,13 +299,14 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
             else:
                 sbom_config = loader.load_profile(profile)
 
-            # Initialize engine and validate
+            # Detection and validator selection are owned by SbomCheckEngine.
             engine = SbomCheckEngine(sbom_config)
             result = engine.validate_file(file_path)
             results.append((file_path, result))
 
             if not result.overall_valid:
                 overall_valid = False
+            remote_resource_failure = _has_remote_resource_failure(result)
         else:
             # Multiple files - use parallel processing
             with ProcessPoolExecutor(max_workers=jobs) as executor:
@@ -288,6 +327,8 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
                     results.append((file_path, result))
                     if not result.overall_valid:
                         overall_valid = False
+                    if _has_remote_resource_failure(result):
+                        remote_resource_failure = True
 
             # Sort results by file path for consistent output
             results.sort(key=lambda x: x[0])
@@ -306,7 +347,10 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
         elif output_format == "json":
             output_json_multiple(results)
 
-        # Exit with appropriate code
+        # A remote-resource failure means validation was incomplete. Give it a
+        # distinct status, including when a batch also contains invalid documents.
+        if remote_resource_failure:
+            sys.exit(REMOTE_RESOURCE_FAILURE_EXIT_CODE)
         sys.exit(0 if overall_valid else 1)
 
     except Exception as e:
@@ -369,7 +413,8 @@ def _validate_config_file(loader: ConfigLoader, config_path: str) -> None:
 def _print_text_result(result: Any, file_path: str) -> None:
     """Print validation result in text format."""
     console.print(f"\n[bold]Validation Results for: {file_path}[/bold]")
-    console.print(f"Profile: {result.profile_name or 'Unknown'}")
+    if result.profile_status is not ProfileStatus.NOT_APPLICABLE:
+        console.print(f"Profile: {result.profile_name or 'Unknown'}")
 
     # Overall status
     if result.overall_valid:
@@ -377,14 +422,20 @@ def _print_text_result(result: Any, file_path: str) -> None:
     else:
         console.print("[red]❌ Overall Result: FAILED[/red]")
 
-    # SPDX validation status
-    if result.spdx_valid:
-        console.print("[green]✅ SPDX 2.3 Validation: PASSED[/green]")
+    format_name = getattr(result, "document_format", "SPDX")
+    format_name = getattr(format_name, "value", format_name)
+    format_name = FORMAT_DISPLAY_NAMES.get(format_name, format_name)
+    specification = f" {result.spec_version}" if result.spec_version else ""
+    core_label = f"{format_name}{specification} Validation"
+    if result.core_valid:
+        console.print(f"[green]✅ {core_label}: PASSED[/green]")
     else:
-        console.print("[red]❌ SPDX 2.3 Validation: FAILED[/red]")
+        console.print(f"[red]❌ {core_label}: FAILED[/red]")
 
-    # Profile validation status
-    if result.profile_valid:
+    profile_status = result.profile_status
+    if profile_status is ProfileStatus.NOT_APPLICABLE:
+        console.print("[blue]Info: Profile Validation: NOT APPLICABLE[/blue]")
+    elif profile_status is ProfileStatus.PASSED:
         console.print("[green]✅ Profile Validation: PASSED[/green]")
     else:
         console.print("[red]❌ Profile Validation: FAILED[/red]")
@@ -427,6 +478,12 @@ def _print_message(msg: Any, color: str) -> None:
     if msg.field_path:
         console.print(f"    Field: {msg.field_path}")
 
+    if msg.json_path:
+        console.print(f"    JSON path: {msg.json_path}")
+
+    if msg.affected_element:
+        console.print(f"    Affected element: {msg.affected_element}")
+
     if msg.found_value is not None:
         console.print(f"    Found: {msg.found_value}")
 
@@ -445,6 +502,10 @@ def _print_json_result(result: Any) -> None:
     # Convert result to JSON-serializable format
     json_result = {
         "overall_valid": result.overall_valid,
+        "document_format": result.document_format,
+        "spec_version": result.spec_version,
+        "core_valid": result.core_valid,
+        "profile_status": result.profile_status.value,
         "spdx_valid": result.spdx_valid,
         "profile_valid": result.profile_valid,
         "profile_name": result.profile_name,
@@ -463,6 +524,8 @@ def _print_json_result(result: Any) -> None:
                 "message": msg.message,
                 "rule_id": msg.rule_id,
                 "field_path": msg.field_path,
+                "json_path": msg.json_path,
+                "affected_element": msg.affected_element,
                 "section_reference": msg.section_reference,
                 "found_value": msg.found_value,
                 "expected_value": msg.expected_value,

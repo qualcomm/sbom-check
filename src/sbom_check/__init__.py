@@ -8,13 +8,19 @@ __author__ = "SBOM Check Contributors"
 __license__ = "BSD-3-Clause"
 
 from sbom_check.models import (
+    DocumentFormat,
+    ProfileStatus,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
 )
+from sbom_validator.engine import ValidatorEngine
 
 __all__ = [
+    "DocumentFormat",
+    "ProfileStatus",
     "SbomCheckResult",
     "ValidationMessage",
     "ValidationSeverity",
+    "ValidatorEngine",
 ]

@@ -10,6 +10,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from sbom_validator.engine import ValidatorEngine
+from sbom_validator.models import DocumentFormat
 from spdx_validator.models import (
     SpdxDocument,
     ValidationMessage,
@@ -19,7 +21,7 @@ from spdx_validator.models import (
 from spdx_validator.validators import JsonSchemaValidator, SemanticValidator
 
 
-class ValidationEngine:
+class ValidationEngine(ValidatorEngine):
     """Main SPDX validation engine that combines multiple validation approaches."""
 
     def __init__(
@@ -46,6 +48,8 @@ class ValidationEngine:
 
         if enable_semantic_validation:
             self.semantic_validator = SemanticValidator()
+
+        self.format = DocumentFormat.SPDX
 
     def validate_json_string(self, spdx_json: str) -> ValidationResult:
         """Validate SPDX document from JSON string.

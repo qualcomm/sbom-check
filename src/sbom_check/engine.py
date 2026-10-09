@@ -6,45 +6,76 @@
 from __future__ import annotations
 
 import json
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from warnings import warn
 
 from sbom_check.config.loader import ConfigLoader
-from sbom_check.models import SbomCheckResult, ValidationSeverity
+from sbom_check.detection import (
+    UnsupportedDocumentError,
+    detect_document,
+    get_document_version,
+)
+from sbom_check.models import (
+    DocumentFormat,
+    ProfileStatus,
+    SbomCheckResult,
+    ValidationMessage,
+    ValidationSeverity,
+    ValidationSummary,
+)
 from spdx_validator.engine import ValidationEngine
 
 if TYPE_CHECKING:
     from sbom_check.config.models import SbomCheckConfig
+    from sbom_validator.engine import ValidatorEngine
 
 
 class SbomCheckEngine:
-    """Main validation engine that combines SPDX validation with custom rules."""
+    """Main engine that combines core validation with format-specific profile validation."""
 
     def __init__(
         self,
         config: SbomCheckConfig | None = None,
         profile_name: str = "default",
+        validator_class: type[ValidatorEngine] | None = None,
     ) -> None:
         """Initialize the SBOM-Check engine.
 
         Args:
             config: Custom configuration to use
             profile_name: Profile name to use if config is not provided
+            validator_class: Validator engine class to instantiate
         """
         if config is None:
             loader = ConfigLoader()
             config = loader.load_profile(profile_name)
 
         self.config = config
+        self.engine = validator_class() if validator_class is not None else None
 
-        # Initialize SPDX validator engine
-        self.spdx_engine = ValidationEngine()
+    @cached_property
+    def spdx_engine(self) -> ValidatorEngine:
+        """Legacy access to the SPDX 2.x validator.
+
+        Deprecated: validation now selects an engine based on the document.
+        """
+        warn(
+            "SbomCheckEngine.spdx_engine is deprecated; use validate_dict() or "
+            "validate_file(). Validation engines are selected automatically per "
+            "document, or explicitly with validator_class.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+        return ValidationEngine()
 
     def validate_file(self, file_path: Path | str) -> SbomCheckResult:
-        """Validate an SPDX document from file.
+        """Validate an SBOM document from file.
 
         Args:
-            file_path: Path to the SPDX JSON file
+            file_path: Path to the SBOM JSON file
 
         Returns:
             Complete validation result
@@ -58,8 +89,12 @@ class SbomCheckEngine:
         except FileNotFoundError:
             result = SbomCheckResult(
                 overall_valid=False,
-                spdx_valid=False,
-                profile_valid=False,
+                spdx_valid=None,
+                profile_valid=None,
+                core_valid=False,
+                profile_status=ProfileStatus.NOT_APPLICABLE,
+                document_format=DocumentFormat.UNKNOWN,
+                spec_version=None,
                 file_path=str(file_path),
                 profile_name=self.config.metadata.name,
             )
@@ -72,8 +107,12 @@ class SbomCheckEngine:
         except (OSError, UnicodeDecodeError) as e:
             result = SbomCheckResult(
                 overall_valid=False,
-                spdx_valid=False,
-                profile_valid=False,
+                spdx_valid=None,
+                profile_valid=None,
+                core_valid=False,
+                profile_status=ProfileStatus.NOT_APPLICABLE,
+                document_format=DocumentFormat.UNKNOWN,
+                spec_version=None,
                 file_path=str(file_path),
                 profile_name=self.config.metadata.name,
             )
@@ -87,7 +126,7 @@ class SbomCheckEngine:
     def validate_json_string(
         self, spdx_json: str, file_path: str | None = None
     ) -> SbomCheckResult:
-        """Validate an SPDX document from JSON string.
+        """Validate an SBOM document from JSON string.
 
         Args:
             spdx_json: SPDX document as JSON string
@@ -101,8 +140,12 @@ class SbomCheckEngine:
         except json.JSONDecodeError as e:
             result = SbomCheckResult(
                 overall_valid=False,
-                spdx_valid=False,
-                profile_valid=False,
+                spdx_valid=None,
+                profile_valid=None,
+                core_valid=False,
+                profile_status=ProfileStatus.NOT_APPLICABLE,
+                document_format=DocumentFormat.UNKNOWN,
+                spec_version=None,
                 file_path=file_path,
                 profile_name=self.config.metadata.name,
             )
@@ -127,21 +170,71 @@ class SbomCheckEngine:
         Returns:
             Complete validation result
         """
-        # Run SPDX validation first
-        spdx_result = self.spdx_engine.validate_dict(spdx_data)
+        selected_engine = None
+        document_format: DocumentFormat = DocumentFormat.UNKNOWN
+        spec_version = None
 
-        # Run custom profile validation
-        profile_result = self._validate_profile_requirements(spdx_data)
+        try:
+            if self.engine is None:
+                detected = detect_document(spdx_data)
+
+                selected_engine = detected.validator_class()
+                document_format = detected.format
+                spec_version = detected.spec_version
+            else:
+                selected_engine = self.engine
+                document_format = selected_engine.format
+                spec_version = get_document_version(document_format, spdx_data)
+        except UnsupportedDocumentError as error:
+            return self._unsupported_result(error, file_path=file_path)
+
+        profile_applicable = document_format is DocumentFormat.SPDX
+
+        # Run the selected format engine.
+        core_result = selected_engine.validate_dict(spdx_data)
+
+        # The completeness profile is SPDX-specific.
+        profile_result = (
+            self._validate_profile_requirements(spdx_data)
+            if profile_applicable
+            else None
+        )
 
         # Combine results
         combined_result = SbomCheckResult.combine(
-            spdx_result=spdx_result,
+            core_result=core_result,
             profile_result=profile_result,
             profile_name=self.config.metadata.name,
             file_path=file_path,
+            document_format=document_format,
+            spec_version=spec_version,
         )
 
         return combined_result
+
+    def _unsupported_result(
+        self, error: UnsupportedDocumentError, file_path: str | None = None
+    ) -> SbomCheckResult:
+        """Create a structured result for unsupported input."""
+        return SbomCheckResult(
+            overall_valid=False,
+            spdx_valid=None,
+            profile_valid=None,
+            core_valid=False,
+            profile_status=ProfileStatus.NOT_APPLICABLE,
+            messages=[
+                ValidationMessage(
+                    severity=ValidationSeverity.ERROR,
+                    message=str(error),
+                    rule_id=error.rule_id,
+                )
+            ],
+            summary=ValidationSummary(errors=1, failed_rules=1),
+            profile_name=None,
+            file_path=file_path,
+            document_format=DocumentFormat.UNKNOWN,
+            spec_version=None,
+        )
 
     def _validate_profile_requirements(
         self, spdx_data: dict[str, Any]
@@ -158,7 +251,11 @@ class SbomCheckEngine:
             overall_valid=True,
             spdx_valid=True,  # This will be overridden in combine()
             profile_valid=True,
+            core_valid=True,
+            profile_status=ProfileStatus.PASSED,
             profile_name=self.config.metadata.name,
+            document_format=DocumentFormat.SPDX,
+            spec_version="2.3",
         )
 
         # Validate document requirements

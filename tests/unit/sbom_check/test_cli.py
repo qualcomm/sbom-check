@@ -10,6 +10,12 @@ from unittest.mock import Mock, patch
 from click.testing import CliRunner
 
 from sbom_check.cli import main
+from sbom_check.models import (
+    ProfileStatus,
+    SbomCheckResult,
+    ValidationMessage,
+    ValidationSeverity,
+)
 
 
 def test_cli_help():
@@ -18,7 +24,10 @@ def test_cli_help():
     result = runner.invoke(main, ["--help"])
 
     assert result.exit_code == 0
-    assert "Validate SPDX 2.3 SBOM documents" in result.output
+    assert (
+        "Validate SPDX SBOM documents, with configurable requirements for SPDX 2.3."
+        in result.output
+    )
     assert "--profile" in result.output
     assert "--config" in result.output
     assert "--output-format" in result.output
@@ -144,7 +153,59 @@ def test_cli_validate_file_not_found():
     runner = CliRunner()
     result = runner.invoke(main, ["nonexistent.json"])
 
-    assert result.exit_code == 2  # Click returns 2 for invalid arguments (file not found)
+    assert (
+        result.exit_code == 2
+    )  # Click returns 2 for invalid arguments (file not found)
+
+
+def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
+    """Use a distinct exit code when SPDX 3 resources are unavailable."""
+    runner = CliRunner()
+    document = tmp_path / "document.spdx.json"
+    document.write_text("{}")
+    result = SbomCheckResult(
+        overall_valid=False,
+        spdx_valid=None,
+        profile_valid=None,
+        core_valid=False,
+        messages=[
+            ValidationMessage(
+                severity=ValidationSeverity.ERROR,
+                message="remote resource unavailable",
+                rule_id="remote_resource_unavailable",
+            )
+        ],
+    )
+
+    with patch("sbom_check.cli.SbomCheckEngine") as engine_class:
+        engine_class.return_value.validate_file.return_value = result
+        cli_result = runner.invoke(main, [str(document)])
+
+    assert cli_result.exit_code == 4
+
+
+@patch("sbom_check.cli.SbomCheckEngine")
+def test_cli_uses_spdx_display_name_for_spdx3(mock_engine_class, tmp_path):
+    """Use the standard SPDX name instead of the internal SPDX3 enum value."""
+    mock_result = Mock()
+    mock_result.profile_name = None
+    mock_result.overall_valid = True
+    mock_result.core_valid = True
+    mock_result.profile_status = ProfileStatus.NOT_APPLICABLE
+    mock_result.document_format = "SPDX3"
+    mock_result.spec_version = "3.0.1"
+    mock_result.messages = []
+
+    mock_engine_class.return_value.validate_file.return_value = mock_result
+
+    test_file = tmp_path / "test.json"
+    test_file.write_text("{}")
+
+    result = CliRunner().invoke(main, [str(test_file)])
+
+    assert result.exit_code == 0
+    assert "SPDX 3.0.1 Validation: PASSED" in result.output
+    assert "Profile: " not in result.output
 
 
 @patch("sbom_check.cli.SbomCheckEngine")
@@ -202,6 +263,10 @@ def test_cli_validate_with_json_output(mock_engine_class, tmp_path):
     mock_result.overall_valid = True
     mock_result.spdx_valid = True
     mock_result.profile_valid = True
+    mock_result.core_valid = True
+    mock_result.profile_status = ProfileStatus.PASSED
+    mock_result.document_format = "SPDX"
+    mock_result.spec_version = "2.3"
     mock_result.profile_name = "Test Profile"
     mock_result.file_path = "test.json"
     mock_result.messages = []
@@ -416,6 +481,7 @@ def test_cli_error_handling(tmp_path):
 
 
 # New tests for directory traversal and enhanced functionality
+
 
 def test_cli_validate_directory_non_recursive(tmp_path):
     """Test directory scanning without recursion."""
@@ -706,6 +772,10 @@ def test_cli_multiple_files_json_output(tmp_path):
         mock_result.overall_valid = True
         mock_result.spdx_valid = True
         mock_result.profile_valid = True
+        mock_result.core_valid = True
+        mock_result.profile_status = ProfileStatus.PASSED
+        mock_result.document_format = "SPDX"
+        mock_result.spec_version = "2.3"
         mock_result.profile_name = "Test Profile"
         mock_result.messages = []
         mock_result.summary.errors = 0
@@ -720,7 +790,9 @@ def test_cli_multiple_files_json_output(tmp_path):
         mock_engine_class.return_value = mock_engine
 
         with patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor):
-            result = runner.invoke(main, ["--output-format", "json", str(file1), str(file2)])
+            result = runner.invoke(
+                main, ["--output-format", "json", str(file1), str(file2)]
+            )
 
         # Should contain JSON summary for multiple files
         assert result.exit_code == 0
@@ -772,6 +844,7 @@ def test_cli_mixed_validation_results(tmp_path):
         invalid_result.get_messages_by_severity.return_value = []
 
         mock_engine = Mock()
+
         # Return different results based on file path
         def mock_validate_file(file_path):
             if file_path.name == "valid.spdx.json":

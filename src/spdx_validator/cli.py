@@ -13,6 +13,7 @@ from typing import Any
 
 import click
 
+from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
 from spdx_validator.engine import ValidationEngine
 from spdx_validator.models import ValidationResult, ValidationSeverity
 
@@ -32,58 +33,6 @@ def validate_single_file(
     result = engine.validate_file(file_path)
     return file_path, result
 
-
-def collect_spdx_files(
-    paths: tuple[Path, ...], recursive: bool, pattern: str
-) -> list[Path]:
-    """Collect all SPDX files from the given paths."""
-    files = []
-
-    for path in paths:
-        if path.is_file():
-            files.append(path.resolve())
-        elif path.is_dir():
-            if recursive:
-                files.extend(p.resolve() for p in path.rglob(pattern))
-            else:
-                files.extend(p.resolve() for p in path.glob(pattern))
-        else:
-            click.echo(f"Warning: {path} is neither a file nor directory", err=True)
-
-    # Sort for consistent output
-    return sorted(files)
-
-
-def output_text_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
-    """Output validation results for multiple files in human-readable text format."""
-    total_files = len(results)
-    valid_files = sum(1 for _, result in results if result.is_valid)
-    invalid_files = total_files - valid_files
-
-    # Color-coded summary header
-    valid_text = click.style(f"{valid_files} valid", fg="green", bold=True)
-    invalid_text = click.style(f"{invalid_files} invalid", fg="red", bold=True)
-    click.echo(f"Validated {total_files} files: {valid_text}, {invalid_text}")
-    click.echo("=" * 80)
-
-    for file_path, result in results:
-        output_text(result, file_path)
-        if result != results[-1][1]:  # Not the last result
-            click.echo()
-
-    # Color-coded overall summary
-    click.echo("=" * 80)
-    if valid_files == total_files:
-        summary_color = "green"
-        summary_text = f"Overall: {valid_files}/{total_files} files valid ✅"
-    elif valid_files == 0:
-        summary_color = "red"
-        summary_text = f"Overall: {valid_files}/{total_files} files valid ❌"
-    else:
-        summary_color = "yellow"
-        summary_text = f"Overall: {valid_files}/{total_files} files valid ⚠️"
-
-    click.echo(click.style(summary_text, fg=summary_color, bold=True))
 
 
 def output_json_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
@@ -154,11 +103,11 @@ def output_json_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
 @click.option(
     "--jobs",
     "-j",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Number of parallel jobs for validation (default: number of CPU cores)",
 )
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals  # noqa: PLR0917
+def main(  # pylint: disable=too-many-positional-arguments,too-many-locals # noqa: PLR0917
     paths: tuple[Path, ...],
     schema_only: bool,
     semantic_only: bool,
@@ -230,7 +179,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals  # no
     if output_format == "json":
         output_json_multiple(results)
     else:
-        output_text_multiple(results)
+        output_text_multiple(results, output_text)
 
     # Exit with appropriate code
     sys.exit(0 if overall_valid else 1)

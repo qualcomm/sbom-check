@@ -22,3 +22,4 @@ dist
 *.yaml
 src/sbom_check/_version.py
 !src/spdx_validator/data/*.json
+!tests/fixtures/*.json

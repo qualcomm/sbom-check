@@ -3,7 +3,10 @@
 
 """Unit tests for data models."""
 
+from types import SimpleNamespace
+
 from sbom_check.models import (
+    ProfileStatus,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
@@ -18,6 +21,7 @@ def test_validation_message_creation():
         message="Test error message",
         rule_id="test_rule",
         field_path="test.field",
+        json_path="$['test']['field']",
         section_reference="Test Section",
         found_value="wrong",
         expected_value="correct",
@@ -28,6 +32,7 @@ def test_validation_message_creation():
     assert msg.message == "Test error message"
     assert msg.rule_id == "test_rule"
     assert msg.field_path == "test.field"
+    assert msg.json_path == "$['test']['field']"
     assert msg.section_reference == "Test Section"
     assert msg.found_value == "wrong"
     assert msg.expected_value == "correct"
@@ -40,6 +45,7 @@ def test_validation_message_str():
         severity=ValidationSeverity.WARNING,
         message="Test warning",
         field_path="test.field",
+        json_path="$['test']['field']",
         found_value="actual",
         expected_value="expected",
     )
@@ -47,8 +53,35 @@ def test_validation_message_str():
     str_repr = str(msg)
     assert "WARNING: Test warning" in str_repr
     assert "Field: test.field" in str_repr
+    assert "JSON path: $['test']['field']" in str_repr
     assert "Found: actual" in str_repr
     assert "Expected: expected" in str_repr
+
+
+def test_convert_spdx_messages_preserves_diagnostics():
+    """Conversion from a core validator keeps all diagnostic context."""
+    raw_message = SimpleNamespace(
+        severity=ValidationSeverity.ERROR,
+        message="Invalid reference",
+        rule_id="spdx3-reference",
+        field_path="creationInfo",
+        json_path="$['@graph'][0]['creationInfo']",
+        affected_element="https://example.com/package",
+        section_reference="SPDX 3.0.1 SHACL validation",
+        found_value="_:CreationInfo2",
+        expected_value="SPDX CreationInfo",
+        remediation="Use an SPDX CreationInfo reference.",
+    )
+    core_result = SimpleNamespace(messages=[raw_message])
+
+    [message] = SbomCheckResult._convert_spdx_messages(core_result)
+
+    assert message.affected_element == raw_message.affected_element
+    assert message.json_path == raw_message.json_path
+    assert message.section_reference == raw_message.section_reference
+    assert message.found_value == raw_message.found_value
+    assert message.expected_value == raw_message.expected_value
+    assert message.remediation == raw_message.remediation
 
 
 def test_validation_summary_success_rate():
@@ -82,6 +115,8 @@ def test_sbom_check_result_creation():
     assert result.overall_valid is True
     assert result.spdx_valid is True
     assert result.profile_valid is True
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
     assert result.profile_name == "test_profile"
     assert result.file_path == "/test/file.json"
     assert len(result.messages) == 0
