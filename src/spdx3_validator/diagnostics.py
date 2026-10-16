@@ -39,7 +39,8 @@ def _shape_value(error_text: str, property_name: str) -> str | None:
 
 
 def _property_label(field_name: str | None) -> str:
-    return f"'{field_name}'" if field_name else "this property"
+    """Return a grammatical label for a property or node-level constraint."""
+    return f"'{field_name}'" if field_name else "property"
 
 
 def _constraint_rule_id(constraint_name: str) -> str:
@@ -131,7 +132,8 @@ class ShaclDiagnosticParser:
             return ValidationMessage(
                 severity=ValidationSeverity.ERROR,
                 message=(
-                    f"The {property_label} property must contain "
+                    f"The {property_label}"
+                    f"{' property' if field_name else ''} must contain "
                     f"{expected_value or 'the minimum required number of values'}."
                 ),
                 rule_id="spdx3_shacl_mincount_constraint",
@@ -151,7 +153,8 @@ class ShaclDiagnosticParser:
             return ValidationMessage(
                 severity=ValidationSeverity.ERROR,
                 message=(
-                    f"The {property_label} property must contain "
+                    f"The {property_label}"
+                    f"{' property' if field_name else ''} must contain "
                     f"{expected_value or 'no more than the maximum allowed number of values'}."
                 ),
                 rule_id="spdx3_shacl_maxcount_constraint",

@@ -239,6 +239,18 @@ def test_cli_rejects_unsupported_spdx3_version(tmp_path):
     assert '"profile_status": "not_applicable"' in result.output
 
 
+def test_cli_reports_format_detection_failure_for_unsupported_document(tmp_path):
+    """Use a detection-specific label when no document format is available."""
+    document_path = tmp_path / "unsupported.json"
+    document_path.write_text(json.dumps({"format": "unknown"}), encoding="utf-8")
+
+    result = CliRunner().invoke(main, [str(document_path)])
+
+    assert result.exit_code == 1
+    assert "❌ Format detection: FAILED" in result.output
+    assert "unknown Validation: FAILED" not in result.output
+
+
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_validate_valid_file(mock_engine_class, tmp_path):
     """Test CLI with valid SPDX file."""

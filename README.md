@@ -51,6 +51,7 @@ not itself a profile failure.
   `schema_valid` and `semantic_valid` as `null` because those checks were not
   evaluated. They are not SBOM content or semantic failures.
 - Each input file is validated independently; merged or cross-document validation is not supported.
+- An SPDX 3.0.1 document with an empty `@graph` is considered valid by the upstream validator. This is expected upstream behavior, but does not indicate that the document contains any SPDX elements.
 
 ## Quick Start
 

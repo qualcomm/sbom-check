@@ -31,6 +31,7 @@ from sbom_check.models import (
     ProfileStatus,
     ValidationSeverity,
 )
+from sbom_validator.models import DocumentFormat
 
 console = Console()
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
@@ -425,8 +426,11 @@ def _print_text_result(result: Any, file_path: str) -> None:
     format_name = getattr(result, "document_format", "SPDX")
     format_name = getattr(format_name, "value", format_name)
     format_name = FORMAT_DISPLAY_NAMES.get(format_name, format_name)
-    specification = f" {result.spec_version}" if result.spec_version else ""
-    core_label = f"{format_name}{specification} Validation"
+    if format_name == DocumentFormat.UNKNOWN.value:
+        core_label = "Format detection"
+    else:
+        specification = f" {result.spec_version}" if result.spec_version else ""
+        core_label = f"{format_name}{specification} Validation"
     if result.core_valid:
         console.print(f"[green]✅ {core_label}: PASSED[/green]")
     else:
