@@ -29,8 +29,6 @@ from spdx3_validator.models import (
 )
 
 SPDX_VERSION = "3.0.1"
-
-
 class ValidationEngine(ValidatorEngine):
     """Validation engine for SPDX 3.0.1 documents."""
 
@@ -163,14 +161,17 @@ class ValidationEngine(ValidatorEngine):
                 schema_valid=False,
                 semantic_valid=False,
             )
-        except FileNotFoundError:
+        except FileNotFoundError as e:
             return ValidationResult(
                 is_valid=False,
                 messages=[
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
-                        message="SPDX validation temporary file not found",
-                        rule_id="temporary_file_not_found",
+                        message=(
+                            "SPDX validation resource not found: "
+                            f"{self._user_facing_error(e, source_path)}"
+                        ),
+                        rule_id="spdx3_validation_resource_not_found",
                     )
                 ],
                 schema_valid=False,
