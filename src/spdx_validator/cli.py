@@ -34,7 +34,6 @@ def validate_single_file(
     return file_path, result
 
 
-
 def output_json_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
     """Output validation results for multiple files in JSON format."""
     output_data = {

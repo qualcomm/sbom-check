@@ -29,6 +29,8 @@ from spdx3_validator.models import (
 )
 
 SPDX_VERSION = "3.0.1"
+
+
 class ValidationEngine(ValidatorEngine):
     """Validation engine for SPDX 3.0.1 documents."""
 
@@ -98,9 +100,7 @@ class ValidationEngine(ValidatorEngine):
                     semantic_valid=semantic_valid,
                 )
 
-            schema_errors = [
-                error for error in result.errors if error.kind == "schema"
-            ]
+            schema_errors = [error for error in result.errors if error.kind == "schema"]
             for error in self._unique_errors(schema_errors):
                 schema_valid = False
                 all_messages.append(

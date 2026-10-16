@@ -30,7 +30,6 @@ def _has_remote_resource_failure(result: ValidationResult) -> bool:
     )
 
 
-
 def validate_single_file(
     file_path: Path,
 ) -> tuple[Path, ValidationResult]:
@@ -136,7 +135,6 @@ def output_json_multiple(results: list[tuple[Path, ValidationResult]]) -> None:
     }
 
     click.echo(json.dumps(output_data, indent=2))
-
 
 
 @click.command()

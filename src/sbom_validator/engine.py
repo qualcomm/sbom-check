@@ -21,12 +21,10 @@ class ValidationResultProtocol(Protocol):
     @property
     def is_valid(self) -> bool:
         """Whether the validated document is valid."""
-        ...
 
     @property
     def messages(self) -> Sequence[Any]:
         """Validation messages produced for the document."""
-        ...
 
 
 class ValidatorEngine(ABC):
