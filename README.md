@@ -41,11 +41,10 @@ not itself a profile failure.
 ### Operational notes
 
 - Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL resources.
-- SPDX JSON-LD documents are structurally validated after JSON-LD parsing. The
-  underlying parser may resolve nested contexts supplied inside graph nodes
-  before the SPDX schema rejects them. Restrict network and filesystem access
-  when validating untrusted documents; network isolation is recommended as
-  defense in depth.
+- SPDX 3.0.1 validation accepts only the canonical top-level SPDX context and
+  rejects nested JSON-LD contexts before parsing. Restrict network and
+  filesystem access when validating untrusted documents; network isolation is
+  still recommended as defense in depth.
 - Resource failures return an error with rule ID
   `remote_resource_unavailable`. They set `is_valid` to `false`, but leave
   `schema_valid` and `semantic_valid` as `null` because those checks were not

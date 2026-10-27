@@ -104,7 +104,13 @@ def detect_document(data: Any) -> DetectedDocument:
 
 
 def _detect_spdx_version(data: dict[str, Any]) -> str:
-    version = data.get("spdxVersion")
+    if "spdxVersion" not in data:
+        raise UnsupportedDocumentError(
+            "SPDX document is missing the required spdxVersion field.",
+            rule_id="missing_spdx_version",
+        )
+
+    version = data["spdxVersion"]
     if not isinstance(version, str) or version != SPDX2_SUPPORTED_VERSION:
         raise UnsupportedDocumentError(
             f"Unsupported SPDX version: {version!r}; "
@@ -171,6 +177,19 @@ def _detect_spdx3(data: dict[str, Any]) -> DetectedDocument:
 
 
 def get_document_version(document_format: DocumentFormat, data: Any) -> str:
+    """Return the supported specification version declared by a document.
+
+    Args:
+        document_format: Format-specific detector to use.
+        data: Parsed JSON document.
+
+    Returns:
+        The normalized specification version.
+
+    Raises:
+        UnsupportedDocumentError: If the document is malformed or declares an
+            unsupported format or version.
+    """
     if not isinstance(data, dict):
         raise UnsupportedDocumentError(
             "Unsupported input: the JSON document must be a top-level object"
@@ -188,4 +207,5 @@ __all__ = [
     "DocumentFormat",
     "UnsupportedDocumentError",
     "detect_document",
+    "get_document_version",
 ]

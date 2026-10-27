@@ -137,7 +137,6 @@ def test_reject_non_object_json(value: object) -> None:
         {"spdxVersion": "SPDX-9.9"},
         {"spdxVersion": "2.3"},
         {"spdxVersion": None},
-        {"SPDXID": "SPDXRef-DOCUMENT"},
     ],
 )
 def test_reject_unsupported_spdx_version(document: dict[str, object]) -> None:
@@ -146,3 +145,11 @@ def test_reject_unsupported_spdx_version(document: dict[str, object]) -> None:
 
     assert error_info.value.rule_id == "unsupported_spdx_version"
     assert "only SPDX-2.3 is supported" in str(error_info.value)
+
+
+def test_reject_missing_spdx_version() -> None:
+    with pytest.raises(UnsupportedDocumentError) as error_info:
+        detect_document({"SPDXID": "SPDXRef-DOCUMENT"})
+
+    assert error_info.value.rule_id == "missing_spdx_version"
+    assert "missing the required spdxVersion field" in str(error_info.value)

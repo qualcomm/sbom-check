@@ -119,42 +119,6 @@ class TestSpdx3ValidationIntegration:
             for message in result.messages
         )
 
-    def test_unknown_spdx_version_returns_validation_message(
-        self, tmp_path: Path, minimal_spdx3_document: dict
-    ) -> None:
-        """Reject a document using an unknown SPDX version."""
-        document_data = minimal_spdx3_document
-        document_data["@context"] = "https://spdx.org/rdf/4.0.0/spdx-context.jsonld"
-        unknown_version = tmp_path / "unknown-version.spdx.json"
-        unknown_version.write_text(json.dumps(document_data), encoding="utf-8")
-
-        result = ValidationEngine().validate_file(unknown_version)
-
-        assert result.is_valid is False
-        assert result.schema_valid is False
-        assert result.semantic_valid is False
-        assert len(result.messages) == 1
-        assert result.messages[0].rule_id == "unsupported_spdx_version"
-        assert "Unsupported SPDX version" in result.messages[0].message
-
-    def test_non_matching_spdx_context_returns_validation_message(
-        self, tmp_path: Path, minimal_spdx3_document: dict
-    ) -> None:
-        """Reject an SPDX context other than the supported context."""
-        document_data = minimal_spdx3_document
-        document_data["@context"] = "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"
-        incompatible_version = tmp_path / "incompatible-version.spdx.json"
-        incompatible_version.write_text(json.dumps(document_data), encoding="utf-8")
-
-        result = ValidationEngine().validate_file(incompatible_version)
-
-        assert result.is_valid is False
-        assert result.schema_valid is False
-        assert result.semantic_valid is False
-        assert len(result.messages) == 1
-        assert result.messages[0].rule_id == "spdx_validate_error"
-        assert "incompatible version 3.0.0" in result.messages[0].message
-
     def test_missing_required_agent_reports_formatted_message(
         self, tmp_path: Path, minimal_spdx3_document: dict
     ) -> None:

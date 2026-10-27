@@ -96,13 +96,6 @@ class TestValidationEngine:
                 },
                 AttributeError("'int' object has no attribute 'items'"),
             ),
-            (
-                {
-                    "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
-                    "@graph": [{"@context": 5, "type": "Agent"}],
-                },
-                AttributeError("'int' object has no attribute 'get'"),
-            ),
         ],
     )
     @patch("spdx3_validator.engine.validate")
@@ -191,14 +184,16 @@ class TestValidationEngine:
         mock_validate.assert_not_called()
 
     @patch("spdx3_validator.engine.validate")
-    def test_validate_dict_unknown_version(self, mock_validate: Mock):
-        """Test handling of an unsupported SPDX context version."""
+    def test_validate_dict_upstream_unknown_version_is_structured(
+        self, mock_validate: Mock
+    ):
+        """Convert an upstream unknown-version failure into a validation result."""
         mock_validate.side_effect = UnknownVersionError(
-            "test.spdx.json has unknown version"
+            "validator reported an unknown version"
         )
 
         result = ValidationEngine().validate_dict(
-            {"@context": "https://spdx.org/rdf/4.0.0/spdx-context.jsonld"}
+            {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
         )
 
         assert result.is_valid is False
@@ -207,8 +202,47 @@ class TestValidationEngine:
         assert len(result.messages) == 1
         assert result.messages[0].rule_id == "unsupported_spdx_version"
         assert result.messages[0].message == (
-            "Unsupported SPDX version: test.spdx.json has unknown version"
+            "Unsupported SPDX version: validator reported an unknown version"
         )
+        mock_validate.assert_called_once()
+
+    @patch("spdx3_validator.engine.validate")
+    def test_validate_dict_rejects_nested_context(self, mock_validate: Mock):
+        """Reject nested contexts before JSON-LD parsing can resolve them."""
+        result = ValidationEngine().validate_dict(
+            {
+                "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+                "@graph": [
+                    {
+                        "@context": "file:///etc/passwd",
+                        "type": "Person",
+                    }
+                ],
+            }
+        )
+
+        assert result.is_valid is False
+        assert result.schema_valid is False
+        assert result.semantic_valid is False
+        assert result.messages[0].rule_id == "spdx3_validation_input_error"
+        assert "Nested @context values are not supported" in result.messages[0].message
+        mock_validate.assert_not_called()
+
+    @patch("spdx3_validator.engine.ShaclDiagnosticParser.parse_shacl_error")
+    @patch("spdx3_validator.engine.validate")
+    def test_validate_dict_does_not_hide_result_processing_errors(
+        self, mock_validate: Mock, mock_parse: Mock
+    ):
+        """Do not classify bugs in result conversion as input errors."""
+        mock_validate.return_value = CustomValidationResult(
+            errors=[CustomValidationError("document", "shacl", "diagnostic")]
+        )
+        mock_parse.side_effect = AttributeError("diagnostic parser bug")
+
+        with pytest.raises(AttributeError, match="diagnostic parser bug"):
+            ValidationEngine().validate_dict(
+                {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+            )
 
     @patch("spdx3_validator.engine.validate")
     def test_validate_dict_schema_and_shacl_errors(self, mock_validate: Mock):

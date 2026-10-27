@@ -12,3 +12,6 @@ class DocumentFormat(str, Enum):
     SPDX = "SPDX"
     SPDX3 = "SPDX3"
     UNKNOWN = "unknown"
+
+
+REMOTE_RESOURCE_UNAVAILABLE_RULE_ID = "remote_resource_unavailable"

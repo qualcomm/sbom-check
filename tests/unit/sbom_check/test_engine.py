@@ -7,11 +7,13 @@ import json
 from copy import deepcopy
 from unittest.mock import Mock, patch
 
+import pytest
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.engine import SbomCheckEngine
 from sbom_check.models import ProfileStatus, SbomCheckResult, ValidationSeverity
+from sbom_validator.models import DocumentFormat
 from spdx3_validator.engine import ValidationEngine as SPDX3ValidationEngine
 
 
@@ -122,6 +124,25 @@ def test_validate_dict(mock_validation_engine):
 
     assert result is not None
     assert result.file_path == "test.json"
+
+
+@pytest.mark.parametrize(
+    "error", [IsADirectoryError("is a directory"), PermissionError("permission denied")]
+)
+@patch("spdx3_validator.engine.validate")
+def test_spdx3_resource_os_errors_remain_structured(
+    mock_validate: Mock, error: OSError
+):
+    """Do not misclassify SPDX 3 resource errors as SBOM file read errors."""
+    mock_validate.side_effect = error
+    document = {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+
+    result = SbomCheckEngine().validate_dict(document)
+
+    assert result.document_format is DocumentFormat.SPDX3
+    assert result.spec_version == "3.0.1"
+    assert all(message.rule_id != "file_read_error" for message in result.messages)
+    assert result.messages[0].rule_id == "remote_resource_unavailable"
 
 
 def test_validate_dict_rejects_non_object_with_explicit_validator():
@@ -444,7 +465,7 @@ def test_document_namespace_fragment_prohibited():
     )
 
 
-def test_missing_spdx_version_returns_structured_unsupported_result(
+def test_missing_spdx_version_returns_structured_result(
     sample_valid_spdx_document,
 ):
     document = deepcopy(sample_valid_spdx_document)
@@ -458,7 +479,11 @@ def test_missing_spdx_version_returns_structured_unsupported_result(
     assert result.core_valid is False
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     assert len(result.messages) == 1
-    assert result.messages[0].rule_id == "unsupported_spdx_version"
+    assert result.messages[0].rule_id == "missing_spdx_version"
+    assert (
+        result.messages[0].message
+        == "SPDX document is missing the required spdxVersion field."
+    )
 
 
 def test_unsupported_spdx_version_returns_structured_result(

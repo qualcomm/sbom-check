@@ -111,6 +111,19 @@ def test_combine_positional_spdx_result_preserves_legacy_behavior():
     assert result.spec_version == "2.3"
 
 
+def test_combine_legacy_result_with_explicit_spdx3_format_keeps_neutral_metadata():
+    """Do not apply SPDX 2 defaults to an explicitly selected SPDX 3 result."""
+    result = SbomCheckResult.combine(
+        SimpleNamespace(is_valid=True, messages=[]),
+        document_format=DocumentFormat.SPDX3,
+    )
+
+    assert result.document_format is DocumentFormat.SPDX3
+    assert result.spec_version is None
+    assert result.profile_valid is None
+    assert result.spdx_valid is None
+
+
 def test_combine_core_result_keyword_keeps_unknown_format():
     """Keyword-based core results retain version-neutral behavior."""
     result = SbomCheckResult.combine(

@@ -12,12 +12,9 @@ from typing import Any
 import click
 
 from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
+from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from spdx3_validator.engine import ValidationEngine
-from spdx3_validator.models import (
-    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
-    ValidationResult,
-    ValidationSeverity,
-)
+from spdx3_validator.models import ValidationResult, ValidationSeverity
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 

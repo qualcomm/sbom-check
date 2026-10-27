@@ -184,6 +184,34 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
     assert cli_result.exit_code == 4
 
 
+@patch("spdx3_validator.engine.validate")
+def test_cli_nested_context_is_input_failure(mock_validate, tmp_path):
+    """Treat a nested unreachable context as invalid input, not infrastructure."""
+    document = tmp_path / "nested-context.spdx.json"
+    document.write_text(
+        json.dumps(
+            {
+                "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+                "@graph": [
+                    {
+                        "@context": "http://127.0.0.1:1/ctx.jsonld",
+                        "type": "Person",
+                        "spdxId": "x:y",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, [str(document), "--output-format", "json"])
+
+    assert result.exit_code == 1
+    assert '"rule_id": "spdx3_validation_input_error"' in result.output
+    assert '"rule_id": "remote_resource_unavailable"' not in result.output
+    mock_validate.assert_not_called()
+
+
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_uses_spdx_display_name_for_spdx3(mock_engine_class, tmp_path):
     """Use the standard SPDX name instead of the internal SPDX3 enum value."""

@@ -13,8 +13,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from sbom_validator.models import DocumentFormat
 
-REMOTE_RESOURCE_UNAVAILABLE_RULE_ID = "remote_resource_unavailable"
-
 if TYPE_CHECKING:
     from sbom_validator.engine import ValidationResultProtocol
 
@@ -152,6 +150,7 @@ class SbomCheckResult(BaseModel):
         meaning. New callers should pass ``core_result`` by keyword.
         """
         using_legacy_spdx_result = spdx_result is not None
+        legacy_format_inferred = False
         if spdx_result is not None and core_result is not None:
             raise TypeError("Pass either spdx_result or core_result, not both")
 
@@ -166,8 +165,9 @@ class SbomCheckResult(BaseModel):
             )
             if document_format is DocumentFormat.UNKNOWN:
                 document_format = DocumentFormat.SPDX
-            if spec_version is None:
-                spec_version = "2.3"
+                legacy_format_inferred = True
+                if spec_version is None:
+                    spec_version = "2.3"
 
         if core_result is None:
             raise TypeError("Missing required argument: core_result")
@@ -187,8 +187,8 @@ class SbomCheckResult(BaseModel):
 
         if profile_result is not None:
             profile_valid = profile_result.overall_valid
-        elif using_legacy_spdx_result:
-            # Preserve the legacy API behavior when no profile was supplied.
+        elif legacy_format_inferred:
+            # Preserve the legacy API behavior when the format was inferred as SPDX.
             profile_valid = True
         else:
             profile_valid = None

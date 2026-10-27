@@ -33,6 +33,10 @@ class ValidatorEngine(ABC):
     format: DocumentFormat
 
     @abstractmethod
+    def validate_json_string(self, spdx_json: str) -> ValidationResultProtocol:
+        """Validate an SBOM document represented as a JSON string."""
+
+    @abstractmethod
     def validate_dict(self, spdx_data: dict[str, Any]) -> ValidationResultProtocol:
         """Validate an SBOM document represented as a dictionary."""
 

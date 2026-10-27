@@ -19,16 +19,19 @@ from spdx3_validate.core import ValidationError as CustomValidationError
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
 from sbom_validator.engine import ValidatorEngine
-from sbom_validator.models import DocumentFormat
+from sbom_validator.models import (
+    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+    DocumentFormat,
+)
 from spdx3_validator.diagnostics import ShaclDiagnosticParser
 from spdx3_validator.models import (
-    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
     ValidationMessage,
     ValidationResult,
     ValidationSeverity,
 )
 
 SPDX_VERSION = "3.0.1"
+SPDX_CONTEXT_URL = f"https://spdx.org/rdf/{SPDX_VERSION}/spdx-context.jsonld"
 
 
 class ValidationEngine(ValidatorEngine):
@@ -67,6 +70,67 @@ class ValidationEngine(ValidatorEngine):
             message = message.replace(str(source_path), "document")
         return message
 
+    @staticmethod
+    def _contains_nested_context(value: Any) -> bool:
+        """Return whether a JSON-LD value contains a nested @context key."""
+        if isinstance(value, dict):
+            return any(
+                key == "@context" or ValidationEngine._contains_nested_context(item)
+                for key, item in value.items()
+            )
+        if isinstance(value, list):
+            return any(
+                ValidationEngine._contains_nested_context(item) for item in value
+            )
+        return False
+
+    @staticmethod
+    def _process_validation_result(
+        result: CustomValidationResult,
+    ) -> ValidationResult:
+        """Convert the upstream validation result to the public result model."""
+        all_messages: list[ValidationMessage] = []
+        schema_valid = True
+        semantic_valid = True
+
+        if result.valid:
+            return ValidationResult(
+                is_valid=True,
+                messages=all_messages,
+                schema_valid=schema_valid,
+                semantic_valid=semantic_valid,
+            )
+
+        schema_errors = [error for error in result.errors if error.kind == "schema"]
+        for error in ValidationEngine._unique_errors(schema_errors):
+            schema_valid = False
+            all_messages.append(
+                ValidationMessage(
+                    severity=ValidationSeverity.ERROR,
+                    message=f"Schema validation error: {error.message}",
+                    rule_id="json_schema",
+                    field_path=None,
+                    json_path=(
+                        error.message.split(":", 1)[0]
+                        if error.message.startswith("$")
+                        else None
+                    ),
+                )
+            )
+
+        shacl_errors = [error for error in result.errors if error.kind == "shacl"]
+        for error in shacl_errors:
+            semantic_valid = False
+            shacl_error = ShaclDiagnosticParser.parse_shacl_error(error.message)
+            all_messages.append(shacl_error)
+
+        return ValidationResult(
+            is_valid=False,
+            messages=all_messages,
+            schema_valid=schema_valid,
+            semantic_valid=semantic_valid,
+        )
+
     def _validate(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
         self, document: dict[str, Any]
     ) -> ValidationResult:
@@ -79,9 +143,6 @@ class ValidationEngine(ValidatorEngine):
         Returns:
             Validation result
         """
-        all_messages: list[ValidationMessage] = []
-        schema_valid = True
-        semantic_valid = True
         source_path: Path | None = None
         try:
             with TemporaryDirectory() as temp_dir:
@@ -91,44 +152,6 @@ class ValidationEngine(ValidatorEngine):
                 result: CustomValidationResult = validate(
                     sources=str(source_path), version=SPDX_VERSION
                 )
-
-            if result.valid:
-                return ValidationResult(
-                    is_valid=True,
-                    messages=all_messages,
-                    schema_valid=schema_valid,
-                    semantic_valid=semantic_valid,
-                )
-
-            schema_errors = [error for error in result.errors if error.kind == "schema"]
-            for error in self._unique_errors(schema_errors):
-                schema_valid = False
-                all_messages.append(
-                    ValidationMessage(
-                        severity=ValidationSeverity.ERROR,
-                        message=f"Schema validation error: {error.message}",
-                        rule_id="json_schema",
-                        field_path=None,
-                        json_path=(
-                            error.message.split(":", 1)[0]
-                            if error.message.startswith("$")
-                            else None
-                        ),
-                    )
-                )
-
-            shacl_errors = [error for error in result.errors if error.kind == "shacl"]
-            for error in shacl_errors:
-                semantic_valid = False
-                shacl_error = ShaclDiagnosticParser.parse_shacl_error(error.message)
-                all_messages.append(shacl_error)
-
-            return ValidationResult(
-                is_valid=False,
-                messages=all_messages,
-                schema_valid=schema_valid,
-                semantic_valid=semantic_valid,
-            )
         except UnknownVersionError as e:
             return ValidationResult(
                 is_valid=False,
@@ -161,16 +184,13 @@ class ValidationEngine(ValidatorEngine):
                 schema_valid=False,
                 semantic_valid=False,
             )
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             return ValidationResult(
                 is_valid=False,
                 messages=[
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
-                        message=(
-                            "SPDX validation resource not found: "
-                            f"{self._user_facing_error(e, source_path)}"
-                        ),
+                        message="SPDX validation resource not found.",
                         rule_id="spdx3_validation_resource_not_found",
                     )
                 ],
@@ -201,6 +221,29 @@ class ValidationEngine(ValidatorEngine):
                 ],
                 # Resource availability is neither a schema nor a semantic
                 # failure in the submitted SBOM. Neither check was evaluated.
+                schema_valid=None,
+                semantic_valid=None,
+            )
+        except OSError:
+            # Do not expose raw OS error text: it may contain a local path from
+            # the validation host. This is a defensive fallback for resource
+            # failures not represented by one of the more specific exceptions.
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "SPDX validation could not be completed because a "
+                            "required remote resource was unavailable."
+                        ),
+                        rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+                        remediation=(
+                            "Make the required SPDX validation resources available "
+                            "and run validation again."
+                        ),
+                    )
+                ],
                 schema_valid=None,
                 semantic_valid=None,
             )
@@ -255,6 +298,8 @@ class ValidationEngine(ValidatorEngine):
                 semantic_valid=False,
             )
 
+        return self._process_validation_result(result)
+
     def validate_json_string(self, spdx_json: str) -> ValidationResult:
         """Validate SPDX document from JSON string.
 
@@ -282,7 +327,9 @@ class ValidationEngine(ValidatorEngine):
 
         return self.validate_dict(spdx_data)
 
-    def validate_dict(self, spdx_data: dict[str, Any]) -> ValidationResult:
+    def validate_dict(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
+        self, spdx_data: dict[str, Any]
+    ) -> ValidationResult:
         """Validate SPDX document from dictionary.
 
         Args:
@@ -348,6 +395,43 @@ class ValidationEngine(ValidatorEngine):
                         severity=ValidationSeverity.ERROR,
                         message="Unsupported @context format: expected a string.",
                         rule_id="unsupported_spdx3_context_form",
+                    )
+                ],
+                schema_valid=False,
+                semantic_valid=False,
+            )
+
+        if context != SPDX_CONTEXT_URL:
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "Unsupported SPDX version: the document must use the "
+                            f"SPDX 3.0.1 context {SPDX_CONTEXT_URL!r}."
+                        ),
+                        rule_id="unsupported_spdx_version",
+                    )
+                ],
+                schema_valid=False,
+                semantic_valid=False,
+            )
+
+        if any(
+            key != "@context" and self._contains_nested_context(value)
+            for key, value in spdx_data.items()
+        ):
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "Nested @context values are not supported; SPDX 3.0.1 "
+                            "requires a single top-level context."
+                        ),
+                        rule_id="spdx3_validation_input_error",
                     )
                 ],
                 schema_valid=False,
