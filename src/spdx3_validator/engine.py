@@ -100,7 +100,9 @@ class ValidationEngine(ValidatorEngine):
         errors: list[CustomValidationError] = []
 
         for error in resources.schema_validator.iter_errors(parsed_document.data):
-            message = error.message if isinstance(error.instance, str) else "Is not valid"
+            message = (
+                error.message if isinstance(error.instance, str) else "Is not valid"
+            )
             errors.append(
                 CustomValidationError(
                     parsed_document.source,
