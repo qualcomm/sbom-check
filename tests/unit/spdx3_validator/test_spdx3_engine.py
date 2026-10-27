@@ -25,7 +25,7 @@ from spdx3_validator.engine import ValidationEngine
 class TestValidationEngine:
     """Test cases for the SPDX 3 validation engine."""
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_success(self, mock_validate: Mock):
         """Test successful dictionary validation without invoking the real validator."""
         mock_validate.return_value = CustomValidationResult()
@@ -38,9 +38,11 @@ class TestValidationEngine:
         assert result.semantic_valid is True
         assert result.messages == []
         mock_validate.assert_called_once()
-        assert mock_validate.call_args.kwargs["version"] == "3.0.1"
+        assert mock_validate.call_args.args[0]["@context"].endswith(
+            "/3.0.1/spdx-context.jsonld"
+        )
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_remote_resource_failure_marks_checks_unevaluated(
         self, mock_validate: Mock
     ):
@@ -56,7 +58,7 @@ class TestValidationEngine:
         assert result.semantic_valid is None
         assert result.messages[0].rule_id == "remote_resource_unavailable"
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_http_protocol_failure_is_remote_resource_failure(
         self, mock_validate: Mock
     ):
@@ -72,7 +74,7 @@ class TestValidationEngine:
         assert result.semantic_valid is None
         assert result.messages[0].rule_id == "remote_resource_unavailable"
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_parser_failure_is_structured(self, mock_validate: Mock):
         """Convert ambiguous RDF parser failures without calling them remote errors."""
         mock_validate.side_effect = ParserError("truncated RDF document")
@@ -98,7 +100,7 @@ class TestValidationEngine:
             ),
         ],
     )
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_malformed_node_is_structured_input_error(
         self, mock_validate: Mock, document: dict, parser_exception: Exception
     ):
@@ -113,7 +115,7 @@ class TestValidationEngine:
         assert result.messages[0].rule_id == "spdx3_validation_input_error"
         assert "Invalid SPDX 3 validation input" in result.messages[0].message
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_rejects_non_object(self, mock_validate: Mock):
         """Test that dictionary validation rejects a non-object JSON value."""
         result = ValidationEngine().validate_dict([])  # type: ignore[arg-type]
@@ -128,7 +130,7 @@ class TestValidationEngine:
         )
         mock_validate.assert_not_called()
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_missing_context(self, mock_validate: Mock):
         """Test handling of a document without an @context."""
         result = ValidationEngine().validate_dict({"@graph": []})
@@ -143,7 +145,7 @@ class TestValidationEngine:
         )
         mock_validate.assert_not_called()
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_rejects_unsupported_context_format(
         self, mock_validate: Mock
     ):
@@ -160,7 +162,7 @@ class TestValidationEngine:
         )
         mock_validate.assert_not_called()
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_rejects_array_context(self, mock_validate: Mock):
         """Reject an SPDX document whose context is an array."""
         result = ValidationEngine().validate_dict(
@@ -183,7 +185,7 @@ class TestValidationEngine:
         )
         mock_validate.assert_not_called()
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_upstream_unknown_version_is_structured(
         self, mock_validate: Mock
     ):
@@ -206,7 +208,7 @@ class TestValidationEngine:
         )
         mock_validate.assert_called_once()
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_rejects_nested_context(self, mock_validate: Mock):
         """Reject nested contexts before JSON-LD parsing can resolve them."""
         result = ValidationEngine().validate_dict(
@@ -229,7 +231,7 @@ class TestValidationEngine:
         mock_validate.assert_not_called()
 
     @patch("spdx3_validator.engine.ShaclDiagnosticParser.parse_shacl_error")
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_does_not_hide_result_processing_errors(
         self, mock_validate: Mock, mock_parse: Mock
     ):
@@ -244,7 +246,7 @@ class TestValidationEngine:
                 {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
             )
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_schema_and_shacl_errors(self, mock_validate: Mock):
         """Test conversion of both schema and SHACL errors."""
         schema_error = CustomValidationError(
@@ -287,7 +289,7 @@ class TestValidationEngine:
         assert shacl_message.field_path == "creationInfo"
         assert shacl_message.found_value == "_:CreationInfo2"
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_shacl_error_preserves_affected_element(
         self, mock_validate: Mock
     ):
@@ -319,7 +321,7 @@ class TestValidationEngine:
         assert message.field_path == "creationInfo"
         assert message.found_value == "_:CreationInfo2"
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_file_success(self, mock_validate: Mock, tmp_path: Path):
         """Test successful file validation without invoking the real validator."""
         mock_validate.return_value = CustomValidationResult()
@@ -336,9 +338,11 @@ class TestValidationEngine:
         assert result.semantic_valid is True
         assert result.messages == []
         mock_validate.assert_called_once()
-        assert mock_validate.call_args.kwargs["version"] == "3.0.1"
+        assert mock_validate.call_args.args[0]["@context"].endswith(
+            "/3.0.1/spdx-context.jsonld"
+        )
 
-    @patch("spdx3_validator.engine.validate")
+    @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_file_invalid_json(self, mock_validate: Mock, tmp_path: Path):
         """Test handling of a file that does not contain valid JSON."""
         document = tmp_path / "invalid.spdx.json"

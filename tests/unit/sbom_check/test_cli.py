@@ -184,7 +184,7 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
     assert cli_result.exit_code == 4
 
 
-@patch("spdx3_validator.engine.validate")
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
 def test_cli_nested_context_is_input_failure(mock_validate, tmp_path):
     """Treat a nested unreachable context as invalid input, not infrastructure."""
     document = tmp_path / "nested-context.spdx.json"

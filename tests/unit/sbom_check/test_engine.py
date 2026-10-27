@@ -129,7 +129,7 @@ def test_validate_dict(mock_validation_engine):
 @pytest.mark.parametrize(
     "error", [IsADirectoryError("is a directory"), PermissionError("permission denied")]
 )
-@patch("spdx3_validator.engine.validate")
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
 def test_spdx3_resource_os_errors_remain_structured(
     mock_validate: Mock, error: OSError
 ):
@@ -527,7 +527,7 @@ def test_engine_returns_structured_result_for_unsupported_input():
     assert result.messages[0].rule_id == "unsupported_format"
 
 
-@patch("spdx3_validator.engine.validate")
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
 def test_engine_auto_detects_spdx3_without_explicit_validator_class(mock_validate):
     """Direct engine callers receive automatic format dispatch."""
     mock_validate.return_value = CustomValidationResult()
@@ -550,10 +550,12 @@ def test_engine_auto_detects_spdx3_without_explicit_validator_class(mock_validat
     assert result.spec_version == "3.0.1"
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     mock_validate.assert_called_once()
-    assert mock_validate.call_args.kwargs["version"] == "3.0.1"
+    assert mock_validate.call_args.args[0]["@context"].endswith(
+        "/3.0.1/spdx-context.jsonld"
+    )
 
 
-@patch("spdx3_validator.engine.validate")
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
 def test_engine_uses_explicit_spdx3_validator_class(mock_validate):
     """Run an SPDX 3 document through an explicitly selected validator."""
     mock_validate.return_value = CustomValidationResult()
@@ -580,10 +582,12 @@ def test_engine_uses_explicit_spdx3_validator_class(mock_validate):
     assert result.document_format == "SPDX3"
     assert result.spec_version == "3.0.1"
     mock_validate.assert_called_once()
-    assert mock_validate.call_args.kwargs["version"] == "3.0.1"
+    assert mock_validate.call_args.args[0]["@context"].endswith(
+        "/3.0.1/spdx-context.jsonld"
+    )
 
 
-@patch("spdx3_validator.engine.validate")
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
 def test_explicit_spdx3_validator_rejects_array_context(mock_validate):
     """Report the unsupported array context with an explicit SPDX 3 validator."""
     engine = SbomCheckEngine(validator_class=SPDX3ValidationEngine)

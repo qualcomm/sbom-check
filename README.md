@@ -40,7 +40,7 @@ not itself a profile failure.
 
 ### Operational notes
 
-- Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL resources.
+- Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL resources. The schema and SHACL resources are cached within each validation process, while the JSON-LD context is resolved for each input document. Resource requests use a finite timeout.
 - SPDX 3.0.1 validation accepts only the canonical top-level SPDX context and
   rejects nested JSON-LD contexts before parsing. Restrict network and
   filesystem access when validating untrusted documents; network isolation is

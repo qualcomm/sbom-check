@@ -7,14 +7,17 @@ import json
 from http.client import HTTPException
 from json import JSONDecodeError
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.error import URLError
 
 from rdflib.exceptions import ParserError
 from rdflib.plugins.parsers.notation3 import BadSyntax
-from spdx3_validate import validate
-from spdx3_validate.core import SpdxValidateError, UnknownVersionError
+from spdx3_validate.core import (
+    Document,
+    SpdxValidateError,
+    UnknownVersionError,
+    check_graph,
+)
 from spdx3_validate.core import ValidationError as CustomValidationError
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
@@ -29,9 +32,13 @@ from spdx3_validator.models import (
     ValidationResult,
     ValidationSeverity,
 )
-
-SPDX_VERSION = "3.0.1"
-SPDX_CONTEXT_URL = f"https://spdx.org/rdf/{SPDX_VERSION}/spdx-context.jsonld"
+from spdx3_validator.resources import (
+    SPDX_CONTEXT_URL,
+    SPDX_VERSION,
+    ValidationResources,
+    configure_network_timeout,
+    load_validation_resources,
+)
 
 
 class ValidationEngine(ValidatorEngine):
@@ -83,6 +90,32 @@ class ValidationEngine(ValidatorEngine):
                 ValidationEngine._contains_nested_context(item) for item in value
             )
         return False
+
+    @staticmethod
+    def _validate_document(document: dict[str, Any]) -> CustomValidationResult:
+        """Parse and validate a document using cached resources."""
+        configure_network_timeout()
+        parsed_document = Document.from_text("document", json.dumps(document))
+        resources: ValidationResources = load_validation_resources()
+        errors: list[CustomValidationError] = []
+
+        for error in resources.schema_validator.iter_errors(parsed_document.data):
+            message = error.message if isinstance(error.instance, str) else "Is not valid"
+            errors.append(
+                CustomValidationError(
+                    parsed_document.source,
+                    "schema",
+                    f"{error.json_path}: {message}",
+                )
+            )
+
+        errors.extend(
+            CustomValidationError(parsed_document.source, "shacl", message)
+            for message in check_graph(
+                parsed_document.graph, resources.shacl_graph, resources.version, True
+            )
+        )
+        return CustomValidationResult(errors=errors)
 
     @staticmethod
     def _process_validation_result(
@@ -145,13 +178,7 @@ class ValidationEngine(ValidatorEngine):
         """
         source_path: Path | None = None
         try:
-            with TemporaryDirectory() as temp_dir:
-                source_path = Path(temp_dir) / "document.spdx.json"
-                source_path.write_text(json.dumps(document), encoding="utf-8")
-
-                result: CustomValidationResult = validate(
-                    sources=str(source_path), version=SPDX_VERSION
-                )
+            result = self._validate_document(document)
         except UnknownVersionError as e:
             return ValidationResult(
                 is_valid=False,
@@ -409,7 +436,7 @@ class ValidationEngine(ValidatorEngine):
                         severity=ValidationSeverity.ERROR,
                         message=(
                             "Unsupported SPDX version: the document must use the "
-                            f"SPDX 3.0.1 context {SPDX_CONTEXT_URL!r}."
+                            f"SPDX {SPDX_VERSION} context {SPDX_CONTEXT_URL!r}."
                         ),
                         rule_id="unsupported_spdx_version",
                     )
