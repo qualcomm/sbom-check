@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from importlib.resources import files
 from pathlib import Path
 from typing import Any
@@ -13,10 +14,15 @@ from typing import Any
 from jsonschema import Draft7Validator
 
 from spdx_validator.models import (
+    DEFAULT_FILES_ANALYZED,
     ValidationMessage,
     ValidationResult,
     ValidationSeverity,
 )
+
+# Accept uppercase intentionally: although the SPDX spec specifies lowercase,
+# the official Java validator accepts both hexadecimal cases.
+PACKAGE_VERIFICATION_CODE_PATTERN = re.compile(r"[0-9a-fA-F]{40}")
 
 
 class JsonSchemaValidator:
@@ -167,6 +173,9 @@ class SemanticValidator:
             # Use optimized direct constraint checking
             # Same validation logic, 100x faster performance
             messages.extend(self._check_semantic_constraints_optimized(spdx_data))
+            messages.extend(
+                self._check_package_verification_code_requirements(spdx_data)
+            )
 
         except (ValueError, TypeError, AttributeError, RuntimeError) as e:
             message = ValidationMessage(
@@ -211,17 +220,18 @@ class SemanticValidator:
         if "SPDXID" in spdx_data:
             all_spdx_ids.add(spdx_data["SPDXID"])
 
-        # Use get() with empty list default to avoid KeyError
+        # Use get() with empty list default to avoid KeyError. Schema-invalid
+        # entries are skipped here so they do not hide unrelated semantic errors.
         for package in spdx_data.get("packages", []):
-            if "SPDXID" in package:
+            if isinstance(package, dict) and "SPDXID" in package:
                 all_spdx_ids.add(package["SPDXID"])
 
         for file_info in spdx_data.get("files", []):
-            if "SPDXID" in file_info:
+            if isinstance(file_info, dict) and "SPDXID" in file_info:
                 all_spdx_ids.add(file_info["SPDXID"])
 
         for snippet in spdx_data.get("snippets", []):
-            if "SPDXID" in snippet:
+            if isinstance(snippet, dict) and "SPDXID" in snippet:
                 all_spdx_ids.add(snippet["SPDXID"])
 
         # Check for required DESCRIBES relationship efficiently
@@ -261,6 +271,92 @@ class SemanticValidator:
                         severity=ValidationSeverity.ERROR,
                         message=f"Relationship references unknown related SPDX ID: {related_element_id}",
                         rule_id="semantic_invalid_related_spdx_id_reference",
+                    )
+                )
+
+        return messages
+
+    def _check_package_verification_code_requirements(
+        self, spdx_data: dict[str, Any]
+    ) -> list[ValidationMessage]:
+        """Validate package verification code presence and format requirements."""
+        messages: list[ValidationMessage] = []
+        document_name = spdx_data.get("name", "Unknown Document")
+
+        for index, package in enumerate(spdx_data.get("packages", [])):
+            if not isinstance(package, dict):
+                continue
+
+            # SPDX 2.3 specifies that filesAnalyzed defaults to true when omitted.
+            files_analyzed = package.get("filesAnalyzed", DEFAULT_FILES_ANALYZED)
+            if "filesAnalyzed" in package and not isinstance(files_analyzed, bool):
+                continue
+
+            verification_code = package.get("packageVerificationCode")
+            package_name = package.get("name") or package.get(
+                "SPDXID", f"Package {index}"
+            )
+
+            if verification_code is None:
+                if files_analyzed is True:
+                    messages.append(
+                        ValidationMessage(
+                            severity=ValidationSeverity.ERROR,
+                            message=(
+                                "Missing required package verification code for package "
+                                f"{package_name} in {document_name}"
+                            ),
+                            path=f"packages.{index}.packageVerificationCode",
+                            element_id=package.get("SPDXID"),
+                            rule_id="missing_package_verification_code",
+                        )
+                    )
+                continue
+
+            value = (
+                verification_code.get("packageVerificationCodeValue")
+                if isinstance(verification_code, dict)
+                else None
+            )
+
+            if files_analyzed is not True:
+                # Match the official validator: an explicitly empty value is allowed
+                # when files are not analyzed, while non-empty values are prohibited.
+                if value != "":
+                    messages.append(
+                        ValidationMessage(
+                            severity=ValidationSeverity.ERROR,
+                            message=(
+                                "Package verification code must not be included when "
+                                f"files are not analyzed for package {package_name} "
+                                f"in {document_name}"
+                            ),
+                            path=f"packages.{index}.packageVerificationCode",
+                            element_id=package.get("SPDXID"),
+                            rule_id="package_verification_code_not_allowed",
+                        )
+                    )
+                continue
+
+            if (
+                not isinstance(value, str)
+                or PACKAGE_VERIFICATION_CODE_PATTERN.fullmatch(value) is None
+            ):
+                messages.append(
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "Invalid package verification code for package "
+                            f"{package_name} in {document_name}: "
+                            "packageVerificationCodeValue must be a 40-character "
+                            "hexadecimal SHA-1 value"
+                        ),
+                        path=(
+                            f"packages.{index}.packageVerificationCode."
+                            "packageVerificationCodeValue"
+                        ),
+                        element_id=package.get("SPDXID"),
+                        rule_id="invalid_package_verification_code",
                     )
                 )
 

@@ -1,0 +1,48 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.3",
+  "serialNumber": "urn:uuid:00000000-0000-4000-8000-000000000001",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2025-01-01T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "Example",
+        "name": "SBOM Generator",
+        "version": "1.0.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "pkg:generic/example/application@1.0.0",
+      "name": "example-application",
+      "version": "1.0.0"
+    }
+  },
+  "components": [
+    {
+      "type": "not-a-component-type",
+      "bom-ref": "pkg:pypi/requests@2.32.0",
+      "group": "python",
+      "name": "requests",
+      "version": "2.32.0",
+      "purl": "pkg:pypi/requests@2.32.0"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:npm/lodash@4.17.21",
+      "name": "lodash",
+      "version": "4.17.21",
+      "purl": "pkg:npm/lodash@4.17.21"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:generic/example/application@1.0.0",
+      "dependsOn": [
+        "pkg:pypi/requests@2.32.0",
+        "pkg:npm/lodash@4.17.21"
+      ]
+    }
+  ]
+}

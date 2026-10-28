@@ -63,6 +63,23 @@ def mock_spdx_schema() -> dict[str, object]:
     }
 
 
+def _document_with_package(package: dict[str, object]) -> dict[str, object]:
+    """Build a semantic-test document containing one package relationship."""
+    package_id = package.get("SPDXID", "SPDXRef-Package")
+    return {
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "MyProduct-v1.0.0-SBOM",
+        "packages": [package],
+        "relationships": [
+            {
+                "spdxElementId": "SPDXRef-DOCUMENT",
+                "relationshipType": "DESCRIBES",
+                "relatedSpdxElement": package_id,
+            }
+        ],
+    }
+
+
 class TestJsonSchemaValidator:
     """Test cases for JsonSchemaValidator."""
 
@@ -384,6 +401,7 @@ class TestSemanticValidator:
                 {
                     "SPDXID": "SPDXRef-Package",
                     "name": "Test Package",
+                    "filesAnalyzed": False,
                 }
             ],
         }
@@ -431,6 +449,36 @@ class TestSemanticValidator:
         assert len(result.messages) > 0
         assert any("unknown related SPDX ID" in msg.message for msg in result.messages)
 
+    def test_non_dict_package_does_not_hide_other_semantic_errors(self) -> None:
+        """Test malformed packages do not discard other semantic errors."""
+        invalid_data = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "packages": [
+                {"SPDXID": "SPDXRef-P", "name": "p"},
+                None,
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": "SPDXRef-NonExistent",
+                }
+            ],
+        }
+
+        validator = SemanticValidator()
+        result = validator.validate(invalid_data)
+
+        assert not result.semantic_valid
+        assert not result.is_valid
+        assert {msg.rule_id for msg in result.messages} == {
+            "missing_package_verification_code",
+            "semantic_invalid_related_spdx_id_reference",
+        }
+        assert not any(
+            msg.rule_id == "semantic_validation_error" for msg in result.messages
+        )
+
     def test_validate_semantic_processing_error(self) -> None:
         """Test handling of semantic processing errors."""
         # Create invalid data that will cause an error in constraint checking
@@ -447,3 +495,196 @@ class TestSemanticValidator:
         assert len(result.messages) >= 1
         # Should fail because no DESCRIBES relationship is present
         assert any("DESCRIBES relationship" in msg.message for msg in result.messages)
+
+    def test_missing_package_verification_code_when_files_analyzed_is_omitted(self):
+        """Test that omitted filesAnalyzed defaults to true."""
+        validator = SemanticValidator()
+
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        errors = result.messages
+
+        assert len(errors) == 1
+        assert errors[0].rule_id == "missing_package_verification_code"
+        assert errors[0].path == "packages.0.packageVerificationCode"
+        assert errors[0].element_id == "SPDXRef-Package-MyApp"
+        assert result.semantic_valid is False
+
+    def test_missing_package_verification_code_when_files_analyzed(self):
+        """Test when filesAnalyzed is true without a verification code."""
+        validator = SemanticValidator()
+
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": True,
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        errors = result.messages
+
+        assert len(errors) == 1
+        assert errors[0].rule_id == "missing_package_verification_code"
+        assert errors[0].path == "packages.0.packageVerificationCode"
+        assert errors[0].element_id == "SPDXRef-Package-MyApp"
+        assert errors[0].message == (
+            "Missing required package verification "
+            "code for package MyApplication in MyProduct-v1.0.0-SBOM"
+        )
+        assert result.semantic_valid is False
+
+    def test_no_package_verification_code_required_when_files_analyzed_is_false(self):
+        """Test that filesAnalyzed=false does not require a verification code."""
+        validator = SemanticValidator()
+
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": False,
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        assert result.messages == []
+        assert result.semantic_valid
+
+    def test_empty_package_verification_code_allowed_when_files_not_analyzed(self):
+        """Test compatibility with the official validator for empty codes."""
+        validator = SemanticValidator()
+
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": False,
+                "packageVerificationCode": {"packageVerificationCodeValue": ""},
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        assert result.messages == []
+        assert result.semantic_valid
+
+    @pytest.mark.parametrize(
+        ("files_analyzed", "package_verification_code"),
+        [
+            ("true", {"packageVerificationCodeValue": "a" * 40}),
+            ("false", None),
+        ],
+    )
+    def test_non_boolean_files_analyzed_skips_verification_code_checks(
+        self,
+        files_analyzed: object,
+        package_verification_code: dict[str, str] | None,
+    ) -> None:
+        """Test invalid filesAnalyzed values do not trigger semantic code checks."""
+        validator = SemanticValidator()
+        package = {
+            "SPDXID": "SPDXRef-Package-MyApp",
+            "name": "MyApplication",
+            "filesAnalyzed": files_analyzed,
+        }
+        if package_verification_code is not None:
+            package["packageVerificationCode"] = package_verification_code
+
+        spdx_data = _document_with_package(package)
+
+        result = validator.validate(spdx_data)
+
+        assert result.messages == []
+        assert result.semantic_valid
+
+    @pytest.mark.parametrize(
+        ("package_verification_code", "is_valid"),
+        [
+            ({"packageVerificationCodeValue": "a" * 39}, False),
+            ({"packageVerificationCodeValue": "a" * 41}, False),
+            ({"packageVerificationCodeValue": ""}, False),
+            ({"packageVerificationCodeValue": "Z" * 40}, False),
+            ({"packageVerificationCodeValue": "A" * 40}, True),
+            ({"packageVerificationCodeValue": 123}, False),
+            ("not-a-dict", False),
+        ],
+    )
+    def test_package_verification_code_format(
+        self, package_verification_code: object, is_valid: bool
+    ) -> None:
+        """Test package verification code length, format, and value types."""
+        validator = SemanticValidator()
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": True,
+                "packageVerificationCode": package_verification_code,
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        assert result.semantic_valid is is_valid
+        assert len(result.messages) == (0 if is_valid else 1)
+        if not is_valid:
+            assert result.messages[0].rule_id == "invalid_package_verification_code"
+
+    @pytest.mark.parametrize(
+        "package_verification_code",
+        [
+            {"packageVerificationCodeValue": "a" * 40},
+            {"packageVerificationCodeValue": "Z" * 40},
+        ],
+    )
+    def test_package_verification_code_not_allowed_when_files_not_analyzed(
+        self, package_verification_code: dict[str, str]
+    ) -> None:
+        """Test that valid and invalid codes are prohibited when files are not analyzed."""
+        validator = SemanticValidator()
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": False,
+                "packageVerificationCode": package_verification_code,
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        assert len(result.messages) == 1
+        assert result.messages[0].rule_id == "package_verification_code_not_allowed"
+        assert result.semantic_valid is False
+
+    def test_package_verification_code_present_when_files_analyzed(self):
+        """Test when filesAnalyzed is true and the package verification code is present."""
+        validator = SemanticValidator()
+
+        spdx_data = _document_with_package(
+            {
+                "SPDXID": "SPDXRef-Package-MyApp",
+                "name": "MyApplication",
+                "filesAnalyzed": True,
+                "packageVerificationCode": {
+                    # Arbitrary valid hexadecimal value; digest calculation is not tested here.
+                    "packageVerificationCodeValue": "a" * 40,
+                },
+            }
+        )
+
+        result = validator.validate(spdx_data)
+
+        assert len(result.messages) == 0
+        assert result.is_valid
+        assert result.semantic_valid

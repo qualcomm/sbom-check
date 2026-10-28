@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sbom_check.models import DocumentFormat
-from spdx_validator.engine import ValidationEngine
 
 if TYPE_CHECKING:
     from sbom_validator.engine import ValidatorEngine
@@ -17,6 +16,9 @@ if TYPE_CHECKING:
 SPDX3_CONTEXT_PREFIX = "https://spdx.org/rdf/3."
 SPDX2_SUPPORTED_VERSION = "SPDX-2.3"
 SPDX3_SUPPORTED_VERSION = "3.0.1"
+
+SUPPORTED_CYCLONEDX_VERSIONS = frozenset({"1.3", "1.4", "1.5", "1.6", "1.7"})
+MINIMUM_CYCLONEDX_VERSION = "1.3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,14 +93,27 @@ def detect_document(data: Any) -> DetectedDocument:
             rule_id="conflicting_format_markers",
         )
 
+    has_cyclonedx_marker = "bomFormat" in data
+    if (has_spdx2_marker and has_cyclonedx_marker) or (
+        has_spdx3_marker and has_cyclonedx_marker
+    ):
+        raise UnsupportedDocumentError(
+            "Unsupported input: document contains conflicting SPDX and "
+            "CycloneDX format markers",
+            rule_id="unsupported_format",
+        )
+
     if has_spdx3_marker:
         return _detect_spdx3(data)
 
     if has_spdx2_marker:
         return _detect_spdx(data)
 
+    if has_cyclonedx_marker:
+        return _detect_cyclonedx(data)
+
     raise UnsupportedDocumentError(
-        "Unsupported input: document does not declare SPDX format",
+        "Unsupported input: document does not declare SPDX or CycloneDX format",
         rule_id="unsupported_format",
     )
 
@@ -162,6 +177,9 @@ def _detect_spdx3_version(data: dict[str, Any]) -> str:
 
 def _detect_spdx(data: dict[str, Any]) -> DetectedDocument:
     spec_version = _detect_spdx_version(data)
+
+    from spdx_validator.engine import ValidationEngine  # noqa: PLC0415  # pylint: disable=import-outside-toplevel
+
     return DetectedDocument(DocumentFormat.SPDX, spec_version, ValidationEngine)
 
 
@@ -176,36 +194,53 @@ def _detect_spdx3(data: dict[str, Any]) -> DetectedDocument:
     return DetectedDocument(DocumentFormat.SPDX3, spec_version, SPDX3ValidationEngine)
 
 
-def get_document_version(document_format: DocumentFormat, data: Any) -> str:
-    """Return the supported specification version declared by a document.
+def _detect_cyclonedx(data: dict[str, Any]) -> DetectedDocument:
+    if (bom_format := data.get("bomFormat")) != DocumentFormat.CYCLONEDX.value:
+        if bom_format is None:
+            message = "Unsupported CycloneDX input: 'bomFormat' is required"
+        else:
+            message = f"Unsupported SBOM format '{bom_format}'"
+        raise UnsupportedDocumentError(message, rule_id="unsupported_format")
 
-    Args:
-        document_format: Format-specific detector to use.
-        data: Parsed JSON document.
-
-    Returns:
-        The normalized specification version.
-
-    Raises:
-        UnsupportedDocumentError: If the document is malformed or declares an
-            unsupported format or version.
-    """
-    if not isinstance(data, dict):
+    version = data.get("specVersion")
+    if not isinstance(version, str) or not version:
         raise UnsupportedDocumentError(
-            "Unsupported input: the JSON document must be a top-level object"
+            "Unsupported CycloneDX input: 'specVersion' must be a non-empty string",
+            rule_id="unsupported_version",
         )
 
-    version_detector = {
-        DocumentFormat.SPDX: _detect_spdx_version,
-        DocumentFormat.SPDX3: _detect_spdx3_version,
-    }
-    return version_detector[document_format](data)
+    if version not in SUPPORTED_CYCLONEDX_VERSIONS:
+        raise UnsupportedDocumentError(
+            f"Unsupported CycloneDX version '{version}'; CycloneDX {version} "
+            f"is below the supported minimum of {MINIMUM_CYCLONEDX_VERSION}"
+            if _is_older_cyclonedx_version(version)
+            else f"Unsupported CycloneDX version '{version}'; supported versions "
+            f"are {', '.join(sorted(SUPPORTED_CYCLONEDX_VERSIONS))}",
+            rule_id="unsupported_version",
+        )
+
+    # pylint: disable=import-outside-toplevel
+    from cyclone_validator.engine import CycloneDXValidationEngine  # noqa: PLC0415
+    # pylint: enable=import-outside-toplevel
+
+    validator_class = CycloneDXValidationEngine
+    return DetectedDocument(DocumentFormat.CYCLONEDX, version, validator_class)
+
+
+def _is_older_cyclonedx_version(version: str) -> bool:
+    """Return whether a well-formed CycloneDX version is below 1.3."""
+    try:
+        major, minor = (int(part) for part in version.split(".", 1))
+    except (ValueError, TypeError):
+        return False
+    return (major, minor) < (1, 3)
 
 
 __all__ = [
+    "MINIMUM_CYCLONEDX_VERSION",
+    "SUPPORTED_CYCLONEDX_VERSIONS",
     "DetectedDocument",
     "DocumentFormat",
     "UnsupportedDocumentError",
     "detect_document",
-    "get_document_version",
 ]

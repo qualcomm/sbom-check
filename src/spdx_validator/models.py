@@ -9,6 +9,9 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator
 
+# SPDX 2.3 defines filesAnalyzed as true when the property is omitted.
+DEFAULT_FILES_ANALYZED: bool = True
+
 
 class ValidationSeverity(str, Enum):
     """Validation message severity levels."""

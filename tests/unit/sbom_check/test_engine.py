@@ -10,11 +10,18 @@ from unittest.mock import Mock, patch
 import pytest
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
+from cyclone_validator.engine import CycloneDXValidationEngine
 from sbom_check.config.loader import ConfigLoader
+from sbom_check.detection import DetectedDocument
 from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import ProfileStatus, SbomCheckResult, ValidationSeverity
-from sbom_validator.models import DocumentFormat
+from sbom_check.models import (
+    DocumentFormat,
+    ProfileStatus,
+    SbomCheckResult,
+    ValidationSeverity,
+)
 from spdx3_validator.engine import ValidationEngine as SPDX3ValidationEngine
+from spdx_validator.engine import ValidationEngine
 
 
 def test_engine_initialization():
@@ -22,6 +29,88 @@ def test_engine_initialization():
     engine = SbomCheckEngine()
     assert engine is not None
     assert engine.config is not None
+
+
+def test_deprecated_spdx_engine_alias_returns_core_engine():
+    """The former public engine attribute remains available during migration."""
+    engine = SbomCheckEngine()
+
+    with pytest.warns(DeprecationWarning, match="spdx_engine"):
+        assert engine.spdx_engine is engine.engine
+
+
+def test_engine_override_is_used_in_auto_detect_mode(sample_valid_spdx_document):
+    """An injected core engine takes precedence over format auto-detection."""
+    replacement_engine = Mock()
+    replacement_engine.validate_dict.return_value = Mock(is_valid=True, messages=[])
+    engine = SbomCheckEngine()
+    engine.engine = replacement_engine
+
+    engine.validate_dict(sample_valid_spdx_document)
+
+    replacement_engine.validate_dict.assert_called_once_with(sample_valid_spdx_document)
+
+
+def test_deprecated_spdx_engine_override_does_not_replace_cyclonedx_validator():
+    """The deprecated SPDX-specific override leaves CycloneDX dispatch intact."""
+    spdx_engine = ValidationEngine()
+    engine = SbomCheckEngine()
+
+    with pytest.warns(DeprecationWarning, match="spdx_engine"):
+        engine.spdx_engine = spdx_engine
+
+    with patch.object(
+        CycloneDXValidationEngine,
+        "validate_dict",
+        autospec=True,
+        side_effect=CycloneDXValidationEngine.validate_dict,
+    ) as validate_cyclonedx:
+        result = engine.validate_dict({"bomFormat": "CycloneDX", "specVersion": "1.7"})
+
+    validate_cyclonedx.assert_called_once()
+    assert result.overall_valid
+    assert result.core_valid
+    assert result.document_format == "CycloneDX"
+
+
+def test_deprecated_spdx_engine_override_is_used_in_auto_detect_mode(
+    sample_valid_spdx_document,
+):
+    """The deprecated setter overrides the auto-detected SPDX validator."""
+    replacement_engine = Mock()
+    replacement_engine.validate_dict.return_value = Mock(is_valid=True, messages=[])
+    engine = SbomCheckEngine()
+
+    with pytest.warns(DeprecationWarning, match="spdx_engine"):
+        engine.spdx_engine = replacement_engine
+
+    engine.validate_dict(sample_valid_spdx_document)
+
+    replacement_engine.validate_dict.assert_called_once_with(sample_valid_spdx_document)
+
+
+def test_auto_detected_validator_is_built_once_and_reused(
+    sample_valid_spdx_document,
+):
+    """Auto-detection retains one validator instance per validator class."""
+
+    class CountingValidator:
+        instances = 0
+
+        def __init__(self) -> None:
+            type(self).instances += 1
+
+        def validate_dict(self, document):
+            del document
+            return Mock(is_valid=True, messages=[])
+
+    detected = DetectedDocument(DocumentFormat.SPDX, "2.3", CountingValidator)
+    with patch("sbom_check.engine.detect_document", return_value=detected):
+        engine = SbomCheckEngine()
+        engine.validate_dict(sample_valid_spdx_document)
+        engine.validate_dict(sample_valid_spdx_document)
+
+    assert CountingValidator.instances == 1
 
 
 def test_engine_initialization_with_config():
@@ -40,6 +129,29 @@ def test_engine_initialization_with_profile():
     assert engine.config.metadata.name == "Basic SPDX 2.3 Compliance"
 
 
+def test_default_profile_requires_explicit_files_analyzed(
+    sample_valid_spdx_document,
+):
+    """Test the default profile requires filesAnalyzed despite the SPDX default."""
+    package = sample_valid_spdx_document["packages"][0]
+    package.pop("filesAnalyzed")
+    package["packageVerificationCode"] = {
+        # Arbitrary valid hexadecimal value; digest calculation is not tested here.
+        "packageVerificationCodeValue": "a" * 40,
+    }
+
+    result = SbomCheckEngine().validate_dict(sample_valid_spdx_document)
+
+    assert not result.overall_valid
+    assert result.spdx_valid
+    assert not result.profile_valid
+    assert any(
+        message.rule_id == "missing_package_field"
+        and message.field_path == "packages[0].filesAnalyzed"
+        for message in result.messages
+    )
+
+
 def test_validate_json_string_invalid_json():
     """Test validation with invalid JSON."""
     engine = SbomCheckEngine()
@@ -49,6 +161,7 @@ def test_validate_json_string_invalid_json():
     assert result.spdx_valid is None
     assert result.profile_valid is None
     assert result.core_valid is False
+    assert result.profile_name is None
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     assert len(result.messages) > 0
     assert result.messages[0].severity == ValidationSeverity.ERROR
@@ -332,6 +445,26 @@ def test_validate_single_package():
     assert len(errors) > 0
 
 
+def test_validate_single_package_uses_true_rules_when_files_analyzed_is_omitted():
+    """Test that omitted filesAnalyzed applies the when_true_requires rules."""
+    config = ConfigLoader().load_profile("basic_spdx")
+    config.package_requirements.files_analyzed_rules.when_true_requires = [
+        "packageVerificationCode"
+    ]
+    engine = SbomCheckEngine(config)
+
+    result = SbomCheckResult(overall_valid=True, spdx_valid=True, profile_valid=True)
+    package = {"name": "test-package"}
+
+    engine._validate_single_package(package, 0, result)
+
+    assert any(
+        message.rule_id == "files_analyzed_missing_field"
+        and message.field_path == "packages[0].packageVerificationCode"
+        for message in result.messages
+    )
+
+
 def test_validate_relationship_requirements():
     """Test relationship requirements validation."""
     engine = SbomCheckEngine()
@@ -486,6 +619,70 @@ def test_missing_spdx_version_returns_structured_result(
     )
 
 
+def test_engine_instantiates_selected_validator_class():
+    """Test that the selected validator class is instantiated as engine."""
+    config = ConfigLoader().load_profile("default")
+    engine = SbomCheckEngine(config, validator_class=CycloneDXValidationEngine)
+
+    assert isinstance(engine.engine, CycloneDXValidationEngine)
+
+
+def test_explicit_spdx_validator_subclass_preserves_spdx_metadata_and_profile(
+    sample_valid_spdx_document,
+):
+    """An explicit validator override does not determine the input format."""
+
+    class CustomValidationEngine(ValidationEngine):
+        pass
+
+    result = SbomCheckEngine(validator_class=CustomValidationEngine).validate_dict(
+        sample_valid_spdx_document
+    )
+
+    assert result.document_format == "SPDX"
+    assert result.spec_version == "2.3"
+    assert result.profile_status is not ProfileStatus.NOT_APPLICABLE
+    assert result.profile_name == "Default SBOM Requirements"
+
+
+def test_cyclonedx_schema_paths_are_preserved_in_combined_result():
+    """CycloneDX JSON paths survive SbomCheckResult conversion."""
+    engine = SbomCheckEngine(
+        validator_class=CycloneDXValidationEngine,
+    )
+    result = engine.validate_dict(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.7",
+            "components": [{"type": "invalid", "name": 123}],
+        }
+    )
+
+    assert not result.overall_valid
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert result.document_format == "CycloneDX"
+    assert result.spec_version == "1.7"
+    assert result.profile_valid is None
+    assert {message.field_path for message in result.messages} >= {
+        "$.components[0].type",
+        "$.components[0].name",
+    }
+
+
+def test_engine_auto_detects_cyclonedx_without_explicit_validator_class():
+    """Direct engine callers receive automatic format dispatch."""
+    result = SbomCheckEngine().validate_dict(
+        {"bomFormat": "CycloneDX", "specVersion": "1.7"}
+    )
+
+    assert result.overall_valid
+    assert result.document_format == "CycloneDX"
+    assert result.spec_version == "1.7"
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+
+
 def test_unsupported_spdx_version_returns_structured_result(
     sample_invalid_spdx_document,
 ):
@@ -514,6 +711,33 @@ def test_unsupported_spdx3_version_returns_structured_result():
     assert len(result.messages) == 1
     assert result.messages[0].rule_id == "unsupported_spdx_version"
     assert "3.0.0" in result.messages[0].message
+
+
+def test_cyclonedx_additional_properties_make_combined_result_invalid() -> None:
+    result = SbomCheckEngine().validate_dict(
+        {
+            "bomFormat": "CycloneDX",
+            "specVersion": "1.4",
+            "bogusRootField": True,
+            "components": [{"type": "library", "name": "example", "bogusField": True}],
+        }
+    )
+
+    assert result.document_format == "CycloneDX"
+    assert result.core_valid is False
+    assert result.overall_valid is False
+    assert result.summary.errors == 2
+    assert result.summary.warnings == 1
+    schema_messages = [
+        message
+        for message in result.messages
+        if message.rule_id == "cyclonedx_schema_error"
+    ]
+    assert len(schema_messages) == 2
+    assert {message.field_path for message in schema_messages} == {
+        "$",
+        "$.components[0]",
+    }
 
 
 def test_engine_returns_structured_result_for_unsupported_input():
@@ -609,3 +833,14 @@ def test_explicit_spdx3_validator_rejects_array_context(mock_validate):
         "by the underlying validator."
     )
     mock_validate.assert_not_called()
+
+
+def test_explicit_validator_returns_structured_result_for_non_object_input():
+    result = SbomCheckEngine(
+        validator_class=CycloneDXValidationEngine,
+    ).validate_dict([])
+
+    assert not result.overall_valid
+    assert result.document_format == "unknown"
+    assert result.core_valid is False
+    assert result.messages[0].rule_id == "unsupported_format"

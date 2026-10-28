@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from warnings import warn
 
 from sbom_validator.engine import ValidatorEngine
-from sbom_validator.models import DocumentFormat
 from spdx_validator.models import (
     SpdxDocument,
     ValidationMessage,
@@ -49,20 +50,50 @@ class ValidationEngine(ValidatorEngine):
         if enable_semantic_validation:
             self.semantic_validator = SemanticValidator()
 
-        self.format = DocumentFormat.SPDX
+    def validate(
+        self, document: dict[str, Any], spec_version: str = "2.3"
+    ) -> ValidationResult:
+        """Validate a parsed SPDX document using a bare or prefixed version identifier."""
+        spec_version = spec_version.removeprefix("SPDX-")
+        if document.get("spdxVersion") != f"SPDX-{spec_version}":
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "Document SPDX version does not match the requested "
+                            f"version {spec_version}"
+                        ),
+                        rule_id="spec_version_mismatch",
+                    )
+                ],
+                schema_valid=False,
+                semantic_valid=False,
+            )
+        return self.validate_dict(document)
 
-    def validate_json_string(self, spdx_json: str) -> ValidationResult:
+    def validate_json_string(
+        self,
+        json_string: str | None = None,
+        *,
+        spdx_json: str | None = None,
+    ) -> ValidationResult:
         """Validate SPDX document from JSON string.
 
         Args:
-            spdx_json: SPDX document as JSON string
+            json_string: SPDX document as JSON string.
+            spdx_json: Deprecated alias for ``json_string``.
 
         Returns:
             Combined validation result
         """
+        json_string = self._resolve_legacy_argument(
+            json_string, spdx_json, "json_string", "spdx_json"
+        )
         try:
             # Parse JSON with custom object hook for normalization during parsing
-            spdx_data = json.loads(spdx_json, object_hook=self._normalize_object_hook)
+            spdx_data = json.loads(json_string, object_hook=self._normalize_object_hook)
         except json.JSONDecodeError as e:
             return ValidationResult(
                 is_valid=False,
@@ -78,6 +109,29 @@ class ValidationEngine(ValidatorEngine):
             )
 
         return self.validate_dict(spdx_data)
+
+    @staticmethod
+    def _resolve_legacy_argument(
+        current: Any | None,
+        legacy: Any | None,
+        current_name: str,
+        legacy_name: str,
+    ) -> Any:
+        """Resolve a deprecated public parameter alias."""
+        if current is not None and legacy is not None:
+            raise TypeError(
+                f"Pass either {current_name!r} or {legacy_name!r}, not both"
+            )
+        if legacy is not None:
+            warn(
+                f"{legacy_name} is deprecated; use {current_name} instead",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return legacy
+        if current is None:
+            raise TypeError(f"Missing required argument: {current_name}")
+        return current
 
     def _normalize_object_hook(self, obj: dict[str, Any]) -> dict[str, Any]:
         """Object hook for JSON parsing to normalize during parsing.
@@ -100,7 +154,7 @@ class ValidationEngine(ValidatorEngine):
                 obj["referenceCategory"] = "PERSISTENT-ID"
         return obj
 
-    def _normalize_spdx_data(self, data: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_data(self, data: dict[str, Any]) -> dict[str, Any]:
         """Normalize SPDX data to handle spec inconsistencies.
 
         Efficiently converts underscore variants to hyphen variants for enum values:
@@ -113,7 +167,8 @@ class ValidationEngine(ValidatorEngine):
             data: SPDX document as dictionary
 
         Returns:
-            Data with enum values corrected (modifies in-place for performance)
+            Data with enum values corrected. The supplied data is normalized
+            in-place; callers should pass an owned copy when needed.
         """
         # Only process packages if they exist
         if "packages" in data and isinstance(data["packages"], list):  # pylint: disable=too-many-nested-blocks
@@ -134,7 +189,7 @@ class ValidationEngine(ValidatorEngine):
         return data
 
     def _enhance_pydantic_error_message(
-        self, error_message: str, spdx_data: dict[str, Any]
+        self, error_message: str, document: dict[str, Any]
     ) -> str:
         """Enhance Pydantic error message by replacing package indices with SPDX IDs.
 
@@ -150,7 +205,7 @@ class ValidationEngine(ValidatorEngine):
 
         def replace_package_reference(match: re.Match[str]) -> str:
             package_index = int(match.group(1))
-            packages = spdx_data.get("packages", [])
+            packages = document.get("packages", [])
 
             if 0 <= package_index < len(packages):
                 package = packages[package_index]
@@ -162,28 +217,40 @@ class ValidationEngine(ValidatorEngine):
 
         return re.sub(pattern, replace_package_reference, error_message)
 
-    def validate_dict(self, spdx_data: dict[str, Any]) -> ValidationResult:
+    def validate_dict(
+        self,
+        document: dict[str, Any] | None = None,
+        *,
+        spdx_data: dict[str, Any] | None = None,
+    ) -> ValidationResult:
         """Validate SPDX document from dictionary.
 
         Args:
-            spdx_data: SPDX document as dictionary (already normalized if from JSON)
+            document: SPDX document as dictionary (already normalized if from JSON).
+            spdx_data: Deprecated alias for ``document``.
 
         Returns:
             Combined validation result
         """
+        document = self._resolve_legacy_argument(
+            document, spdx_data, "document", "spdx_data"
+        )
+        # Validation normalizes enum values internally, but must not mutate the
+        # caller's document (including nested package external references).
+        document = self._normalize_data(deepcopy(document))
         all_messages: list[ValidationMessage] = []
         schema_valid = True
         semantic_valid = True
 
         # Perform JSON schema validation
         if self.enable_schema_validation and self.schema_validator:
-            schema_result = self.schema_validator.validate(spdx_data)
+            schema_result = self.schema_validator.validate(document)
             all_messages.extend(schema_result.messages)
             schema_valid = schema_result.schema_valid
 
         # Perform semantic validation only if schema validation passes
         if self.enable_semantic_validation and self.semantic_validator and schema_valid:
-            semantic_result = self.semantic_validator.validate(spdx_data)
+            semantic_result = self.semantic_validator.validate(document)
             all_messages.extend(semantic_result.messages)
             semantic_valid = semantic_result.semantic_valid
         elif self.enable_semantic_validation and not schema_valid:
@@ -199,10 +266,10 @@ class ValidationEngine(ValidatorEngine):
 
         # Try to parse with Pydantic for additional validation
         try:
-            SpdxDocument.model_validate(spdx_data)
+            SpdxDocument.model_validate(document)
         except (ValueError, TypeError, AttributeError) as e:
             # Enhance error message with SPDX IDs
-            enhanced_message = self._enhance_pydantic_error_message(str(e), spdx_data)
+            enhanced_message = self._enhance_pydantic_error_message(str(e), document)
             all_messages.append(
                 ValidationMessage(
                     severity=ValidationSeverity.ERROR,

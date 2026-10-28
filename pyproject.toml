@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sbom-check"
 dynamic = ["version"]
-description = "SPDX 2.3 and SPDX 3.0.1 SBOM validator with configurable additional requirements for completeness validation"
+description = "Multi-format SBOM validator for SPDX 2.3, SPDX 3.0.1 and CycloneDX JSON documents"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 authors = [
@@ -33,6 +33,8 @@ dependencies = [
     "jinja2>=3.1.0",
     # spdx-validator dependencies
     "jsonschema>=4.25.1",
+    # CycloneDX dependencies
+    "cyclonedx-python-lib[json-validation]>=11.12,<12",
     # spdx3-validator dependencies
     "spdx3-validate==0.0.7",
 ]
@@ -40,6 +42,7 @@ dependencies = [
 [project.scripts]
 sbom-check = "sbom_check.cli:main"
 spdx-validate = "spdx_validator.cli:main"
+cyclonedx-validate = "cyclone_validator.cli:main"
 sbom-spdx3-validate = "spdx3_validator.cli:main"
 
 [dependency-groups]
@@ -108,7 +111,13 @@ ignore = [
 "tests/*" = ["ARG", "S101", "PLR2004"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["sbom_check", "sbom_validator", "spdx_validator", "spdx3_validator"]
+known-first-party = [
+    "sbom_check",
+    "spdx_validator",
+    "cyclone_validator",
+    "sbom_validator",
+    "spdx3_validator",
+]
 
 [tool.mypy]
 python_version = "3.10"
@@ -178,7 +187,13 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["sbom_check", "sbom_validator", "spdx_validator", "spdx3_validator"]
+source = [
+    "sbom_check",
+    "spdx_validator",
+    "cyclone_validator",
+    "sbom_validator",
+    "spdx3_validator",
+]
 omit = [
     "*/tests/*",
     "*/test_*",

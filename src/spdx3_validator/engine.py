@@ -22,10 +22,7 @@ from spdx3_validate.core import ValidationError as CustomValidationError
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
 from sbom_validator.engine import ValidatorEngine
-from sbom_validator.models import (
-    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
-    DocumentFormat,
-)
+from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from spdx3_validator.diagnostics import ShaclDiagnosticParser
 from spdx3_validator.models import (
     ValidationMessage,
@@ -46,7 +43,6 @@ class ValidationEngine(ValidatorEngine):
 
     def __init__(self) -> None:
         """Initialize the validation engine for SPDX 3.0.1."""
-        self.format = DocumentFormat.SPDX3
 
     @staticmethod
     def _unique_errors(
@@ -329,17 +325,17 @@ class ValidationEngine(ValidatorEngine):
 
         return self._process_validation_result(result)
 
-    def validate_json_string(self, spdx_json: str) -> ValidationResult:
+    def validate_json_string(self, json_string: str) -> ValidationResult:
         """Validate SPDX document from JSON string.
 
         Args:
-            spdx_json: SPDX document as JSON string
+            json_string: SPDX document as JSON string
 
         Returns:
             Combined validation result
         """
         try:
-            spdx_data = json.loads(spdx_json)
+            spdx_data = json.loads(json_string)
         except json.JSONDecodeError as e:
             return ValidationResult(
                 is_valid=False,
@@ -357,17 +353,17 @@ class ValidationEngine(ValidatorEngine):
         return self.validate_dict(spdx_data)
 
     def validate_dict(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
-        self, spdx_data: dict[str, Any]
+        self, document: dict[str, Any]
     ) -> ValidationResult:
         """Validate SPDX document from dictionary.
 
         Args:
-            spdx_data: SPDX document as dictionary (already normalized if from JSON)
+            document: SPDX document as dictionary (already normalized if from JSON)
 
         Returns:
             Combined validation result
         """
-        runtime_document: Any = spdx_data
+        runtime_document: Any = document
         if not isinstance(runtime_document, dict):
             return ValidationResult(
                 is_valid=False,
@@ -384,7 +380,7 @@ class ValidationEngine(ValidatorEngine):
                 semantic_valid=False,
             )
 
-        if "@context" not in spdx_data:
+        if "@context" not in document:
             return ValidationResult(
                 is_valid=False,
                 messages=[
@@ -398,7 +394,7 @@ class ValidationEngine(ValidatorEngine):
                 semantic_valid=False,
             )
 
-        context = spdx_data["@context"]
+        context = document["@context"]
         if isinstance(context, list):
             return ValidationResult(
                 is_valid=False,
@@ -449,7 +445,7 @@ class ValidationEngine(ValidatorEngine):
 
         if any(
             key != "@context" and self._contains_nested_context(value)
-            for key, value in spdx_data.items()
+            for key, value in document.items()
         ):
             return ValidationResult(
                 is_valid=False,
@@ -467,7 +463,7 @@ class ValidationEngine(ValidatorEngine):
                 semantic_valid=False,
             )
 
-        return self._validate(spdx_data)
+        return self._validate(document)
 
     def validate_file(self, file_path: str | Path) -> ValidationResult:
         """Validate SPDX document from file.

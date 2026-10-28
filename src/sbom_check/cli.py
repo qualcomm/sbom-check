@@ -13,7 +13,7 @@ import json
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import click
 from rich.console import Console
@@ -27,12 +27,8 @@ except ImportError:
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.engine import SbomCheckEngine
 from sbom_check.models import ProfileStatus, ValidationSeverity
-from sbom_validator.models import (
-    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
-    DocumentFormat,
-)
+from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 
-console = Console()
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 
 # User-facing names for document format enum values.  SPDX3 is an internal
@@ -42,28 +38,117 @@ FORMAT_DISPLAY_NAMES = {
     "SPDX3": "SPDX",
 }
 
+if TYPE_CHECKING:
+    from sbom_check.config.models import SbomCheckConfig
+
+console = Console()
+DEFAULT_SBOM_PATTERN = "*.{spdx,cdx}.json"
+
+
+MAX_PATTERN_EXPANSIONS = 1024
+_worker_state: dict[str, SbomCheckEngine] = {}
+
+
+def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
+    """Load the selected profile and optional configuration file."""
+    loader = ConfigLoader()
+    return (
+        loader.load_with_profile(profile, config_path)
+        if config_path
+        else loader.load_profile(profile)
+    )
+
+
+def _initialize_worker(sbom_config: SbomCheckConfig) -> None:
+    """Create the reusable validation engine for one worker process."""
+    _worker_state["engine"] = SbomCheckEngine(sbom_config)
+
+
+def _expand_pattern(pattern: str) -> tuple[str, ...]:
+    """Expand brace alternatives recursively for filesystem globbing.
+
+    Empty alternatives are valid, but malformed brace ordering and unmatched
+    braces raise ``ValueError`` so the CLI can report the invalid pattern.
+    Expansion is capped to keep pathological user input bounded.
+    """
+    try:
+        return _expand_pattern_fragment(pattern)
+    except ValueError as error:
+        raise ValueError(f"Invalid brace pattern {pattern!r}: {error}") from None
+
+
+def _expand_pattern_fragment(pattern: str) -> tuple[str, ...]:
+    """Expand one pattern fragment while preserving the original error context."""
+    open_index = pattern.find("{")
+    close_index = pattern.find("}")
+    if open_index == -1 and close_index == -1:
+        return (pattern,)
+    if close_index != -1 and (open_index == -1 or close_index < open_index):
+        raise ValueError("unmatched '}'")
+
+    depth = 0
+    matching_close = None
+    for index in range(open_index, len(pattern)):
+        character = pattern[index]
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                matching_close = index
+                break
+
+    if matching_close is None:
+        raise ValueError("unmatched '{'")
+
+    prefix = pattern[:open_index]
+    contents = pattern[open_index + 1 : matching_close]
+    suffix = pattern[matching_close + 1 :]
+
+    alternatives: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(contents):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            alternatives.append(contents[start:index])
+            start = index + 1
+    alternatives.append(contents[start:])
+
+    expanded: list[str] = []
+    for alternative in alternatives:
+        expanded.extend(_expand_pattern_fragment(f"{prefix}{alternative}{suffix}"))
+        if len(expanded) > MAX_PATTERN_EXPANSIONS:
+            raise ValueError(f"expands to more than {MAX_PATTERN_EXPANSIONS} patterns")
+    return tuple(expanded)
+
 
 def collect_sbom_files(
-    paths: tuple[Path, ...], recursive: bool, pattern: str
+    paths: tuple[Path, ...], recursive: bool, pattern: str | None
 ) -> list[Path]:
     """Collect all SBOM files from the given paths."""
     files = []
+    patterns = _expand_pattern(pattern or DEFAULT_SBOM_PATTERN)
 
     for path in paths:
         if path.is_file():
             files.append(path.resolve())
         elif path.is_dir():
-            if recursive:
-                files.extend(p.resolve() for p in path.rglob(pattern))
-            else:
-                files.extend(p.resolve() for p in path.glob(pattern))
+            for current_pattern in patterns:
+                if recursive:
+                    files.extend(p.resolve() for p in path.rglob(current_pattern))
+                else:
+                    files.extend(p.resolve() for p in path.glob(current_pattern))
         else:
             console.print(
                 f"[yellow]Warning: {path} is neither a file nor directory[/yellow]"
             )
 
     # Sort for consistent output
-    return sorted(files)
+    return sorted(set(files))
 
 
 def validate_single_file(
@@ -72,16 +157,9 @@ def validate_single_file(
     config_path: str | None,
 ) -> tuple[Path, Any]:
     """Validate a single SBOM file. Used for parallel processing."""
-    loader = ConfigLoader()
-
-    # Load configuration
-    if config_path:
-        sbom_config = loader.load_with_profile(profile, config_path)
-    else:
-        sbom_config = loader.load_profile(profile)
-
-    # Detection and validator selection are owned by SbomCheckEngine.
-    engine = SbomCheckEngine(sbom_config)
+    if (engine := _worker_state.get("engine")) is None:
+        _initialize_worker(_load_config(profile, config_path))
+        engine = _worker_state["engine"]
     result = engine.validate_file(file_path)
     return file_path, result
 
@@ -211,8 +289,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
 )
 @click.option(
     "--pattern",
-    default="*.spdx.json",
-    help="File pattern to match when scanning directories (default: *.spdx.json)",
+    default=DEFAULT_SBOM_PATTERN,
+    help=f"File pattern to match when scanning directories (default: {DEFAULT_SBOM_PATTERN})",
 )
 @click.option(
     "--jobs",
@@ -249,7 +327,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
     generate_config: bool,
     validate_config: str | None,
 ) -> None:
-    """Validate SPDX SBOM documents, with configurable requirements for SPDX 2.3.
+    """Validate SPDX and CycloneDX JSON SBOM documents.
 
     PATHS can be individual files or directories. When directories are provided,
     they will be scanned for SBOM files matching the specified pattern.
@@ -293,11 +371,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
             # Single file - no need for parallel processing
             file_path = files_to_validate[0]
 
-            # Load configuration
-            if config:
-                sbom_config = loader.load_with_profile(profile, config)
-            else:
-                sbom_config = loader.load_profile(profile)
+            sbom_config = _load_config(profile, config)
 
             # Detection and validator selection are owned by SbomCheckEngine.
             engine = SbomCheckEngine(sbom_config)
@@ -309,7 +383,12 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
             remote_resource_failure = _has_remote_resource_failure(result)
         else:
             # Multiple files - use parallel processing
-            with ProcessPoolExecutor(max_workers=jobs) as executor:
+            sbom_config = _load_config(profile, config)
+            with ProcessPoolExecutor(
+                max_workers=jobs,
+                initializer=_initialize_worker,
+                initargs=(sbom_config,),
+            ) as executor:
                 # Submit all validation tasks
                 future_to_file = {
                     executor.submit(
@@ -410,11 +489,34 @@ def _validate_config_file(loader: ConfigLoader, config_path: str) -> None:
         sys.exit(3)
 
 
+def _result_core_valid(result: Any) -> bool:
+    """Read format-neutral core status with legacy-result compatibility."""
+    value = getattr(result, "core_valid", None)
+    return value if isinstance(value, bool) else bool(result.spdx_valid)
+
+
+def _result_profile_status(result: Any) -> ProfileStatus:
+    """Read explicit profile status with legacy-result compatibility."""
+    value = getattr(result, "profile_status", None)
+    if isinstance(value, ProfileStatus):
+        return value
+    if getattr(result, "document_format", "SPDX") == "SPDX":
+        return (
+            ProfileStatus.PASSED if bool(result.profile_valid) else ProfileStatus.FAILED
+        )
+    return ProfileStatus.NOT_APPLICABLE
+
+
 def _print_text_result(result: Any, file_path: str) -> None:
     """Print validation result in text format."""
     console.print(f"\n[bold]Validation Results for: {file_path}[/bold]")
-    if result.profile_status is not ProfileStatus.NOT_APPLICABLE:
-        console.print(f"Profile: {result.profile_name or 'Unknown'}")
+    profile_status = _result_profile_status(result)
+    profile_name = (
+        result.profile_name
+        if profile_status is not ProfileStatus.NOT_APPLICABLE
+        else "N/A"
+    )
+    console.print(f"Profile: {profile_name or 'Unknown'}")
 
     # Overall status
     if result.overall_valid:
@@ -425,17 +527,18 @@ def _print_text_result(result: Any, file_path: str) -> None:
     format_name = getattr(result, "document_format", "SPDX")
     format_name = getattr(format_name, "value", format_name)
     format_name = FORMAT_DISPLAY_NAMES.get(format_name, format_name)
-    if format_name == DocumentFormat.UNKNOWN.value:
-        core_label = "Format detection"
-    else:
-        specification = f" {result.spec_version}" if result.spec_version else ""
-        core_label = f"{format_name}{specification} Validation"
-    if result.core_valid:
+    specification = f" {result.spec_version}" if result.spec_version else ""
+    core_label = (
+        "Core Validation"
+        if format_name == "unknown"
+        else f"{format_name}{specification} Validation"
+    )
+
+    if _result_core_valid(result):
         console.print(f"[green]✅ {core_label}: PASSED[/green]")
     else:
         console.print(f"[red]❌ {core_label}: FAILED[/red]")
 
-    profile_status = result.profile_status
     if profile_status is ProfileStatus.NOT_APPLICABLE:
         console.print("[blue]Info: Profile Validation: NOT APPLICABLE[/blue]")
     elif profile_status is ProfileStatus.PASSED:
@@ -507,8 +610,8 @@ def _print_json_result(result: Any) -> None:
         "overall_valid": result.overall_valid,
         "document_format": result.document_format,
         "spec_version": result.spec_version,
-        "core_valid": result.core_valid,
-        "profile_status": result.profile_status.value,
+        "core_valid": _result_core_valid(result),
+        "profile_status": _result_profile_status(result).value,
         "spdx_valid": result.spdx_valid,
         "profile_valid": result.profile_valid,
         "profile_name": result.profile_name,

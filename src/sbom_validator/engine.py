@@ -12,8 +12,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from sbom_validator.models import DocumentFormat
-
 
 class ValidationResultProtocol(Protocol):
     """Common result interface exposed by format-specific validators."""
@@ -30,14 +28,12 @@ class ValidationResultProtocol(Protocol):
 class ValidatorEngine(ABC):
     """Interface required by every format-specific validation engine."""
 
-    format: DocumentFormat
-
     @abstractmethod
-    def validate_json_string(self, spdx_json: str) -> ValidationResultProtocol:
+    def validate_json_string(self, json_string: str) -> ValidationResultProtocol:
         """Validate an SBOM document represented as a JSON string."""
 
     @abstractmethod
-    def validate_dict(self, spdx_data: dict[str, Any]) -> ValidationResultProtocol:
+    def validate_dict(self, document: dict[str, Any]) -> ValidationResultProtocol:
         """Validate an SBOM document represented as a dictionary."""
 
     @abstractmethod
