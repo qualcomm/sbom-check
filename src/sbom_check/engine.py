@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Any
 from warnings import warn
 
 from sbom_check.config.loader import ConfigLoader
-from sbom_check.detection import UnsupportedDocumentError, detect_document
+from sbom_check.detection import (
+    UnsupportedDocumentError,
+    detect_document,
+)
 from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
@@ -250,7 +253,11 @@ class SbomCheckEngine:
             overall_valid=True,
             spdx_valid=True,  # This will be overridden in combine()
             profile_valid=True,
+            core_valid=True,
+            profile_status=ProfileStatus.PASSED,
             profile_name=self.config.metadata.name,
+            document_format=DocumentFormat.SPDX,
+            spec_version="2.3",
         )
 
         # Validate document requirements

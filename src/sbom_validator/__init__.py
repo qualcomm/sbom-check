@@ -3,6 +3,6 @@
 
 """Format-neutral interfaces shared by SBOM validators."""
 
-from sbom_validator.engine import ValidatorEngine
+from sbom_validator.engine import ValidationResultProtocol, ValidatorEngine
 
-__all__ = ["ValidatorEngine"]
+__all__ = ["ValidationResultProtocol", "ValidatorEngine"]

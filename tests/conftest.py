@@ -4,12 +4,25 @@
 """Pytest configuration and shared fixtures."""
 
 import json
+from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.config.models import SbomCheckConfig
+
+MINIMAL_SPDX3_DOCUMENT = (
+    Path(__file__).parent / "fixtures" / "minimal-spdx3.0.1.spdx.json"
+)
+
+
+@pytest.fixture
+def minimal_spdx3_document() -> dict[str, Any]:
+    """Provide an isolated deep copy of the minimal SPDX 3 document."""
+    document = json.loads(MINIMAL_SPDX3_DOCUMENT.read_text(encoding="utf-8"))
+    return deepcopy(document)
 
 
 @pytest.fixture

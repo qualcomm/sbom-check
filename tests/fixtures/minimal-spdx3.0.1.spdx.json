@@ -1,0 +1,38 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://example.com/doc",
+      "name": "Minimal",
+      "creationInfo": "_:ci",
+      "rootElement": ["https://example.com/pkg"]
+    },
+    {
+      "@id": "_:ci",
+      "type": "CreationInfo",
+      "specVersion": "3.0.1",
+      "created": "2024-01-01T00:00:00Z",
+      "createdBy": ["https://example.com/agent"]
+    },
+    {
+      "type": "Agent",
+      "spdxId": "https://example.com/agent",
+      "name": "Example",
+      "creationInfo": "_:ci2"
+    },
+    {
+      "@id": "_:ci2",
+      "type": "CreationInfo",
+      "specVersion": "3.0.1",
+      "created": "2024-01-01T00:00:00Z",
+      "createdBy": ["https://example.com/agent"]
+    },
+    {
+      "type": "software_Package",
+      "spdxId": "https://example.com/pkg",
+      "name": "pkg",
+      "creationInfo": "_:ci"
+    }
+  ]
+}

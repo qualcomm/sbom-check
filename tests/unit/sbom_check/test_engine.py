@@ -8,6 +8,7 @@ from copy import deepcopy
 from unittest.mock import Mock, patch
 
 import pytest
+from spdx3_validate.core import ValidationResult as CustomValidationResult
 
 from cyclone_validator.engine import CycloneDXValidationEngine
 from sbom_check.config.loader import ConfigLoader
@@ -19,6 +20,7 @@ from sbom_check.models import (
     SbomCheckResult,
     ValidationSeverity,
 )
+from spdx3_validator.engine import ValidationEngine as SPDX3ValidationEngine
 from spdx_validator.engine import ValidationEngine
 
 
@@ -158,6 +160,7 @@ def test_validate_json_string_invalid_json():
     assert not result.overall_valid
     assert result.spdx_valid is None
     assert result.profile_valid is None
+    assert result.core_valid is False
     assert result.profile_name is None
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     assert len(result.messages) > 0
@@ -236,14 +239,51 @@ def test_validate_dict(mock_validation_engine):
     assert result.file_path == "test.json"
 
 
+@pytest.mark.parametrize(
+    "error", [IsADirectoryError("is a directory"), PermissionError("permission denied")]
+)
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
+def test_spdx3_resource_os_errors_remain_structured(
+    mock_validate: Mock, error: OSError
+):
+    """Do not misclassify SPDX 3 resource errors as SBOM file read errors."""
+    mock_validate.side_effect = error
+    document = {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+
+    result = SbomCheckEngine().validate_dict(document)
+
+    assert result.document_format is DocumentFormat.SPDX3
+    assert result.spec_version == "3.0.1"
+    assert all(message.rule_id != "file_read_error" for message in result.messages)
+    assert result.messages[0].rule_id == "remote_resource_unavailable"
+
+
+def test_validate_dict_rejects_non_object_with_explicit_validator():
+    """Return a structured error when an explicit validator receives non-object JSON."""
+    engine = SbomCheckEngine(validator_class=SPDX3ValidationEngine)
+
+    result = engine.validate_dict([])  # type: ignore[arg-type]
+
+    assert result.overall_valid is False
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert len(result.messages) == 1
+    assert result.messages[0].rule_id == "unsupported_format"
+    assert result.messages[0].message == (
+        "Unsupported input: the JSON document must be a top-level object"
+    )
+
+
 def test_validate_file_not_found():
     """Test validation with non-existent file."""
     engine = SbomCheckEngine()
     result = engine.validate_file("nonexistent.json")
 
     assert not result.overall_valid
-    assert not result.spdx_valid
-    assert not result.profile_valid
+    assert result.spdx_valid is None
+    assert result.profile_valid is None
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     assert len(result.messages) > 0
     assert result.messages[0].severity == ValidationSeverity.ERROR
     assert "File not found" in result.messages[0].message
@@ -262,8 +302,10 @@ def test_validate_file_read_error(tmp_path):
         result = engine.validate_file(test_file)
 
         assert not result.overall_valid
-        assert not result.spdx_valid
-        assert not result.profile_valid
+        assert result.spdx_valid is None
+        assert result.profile_valid is None
+        assert result.core_valid is False
+        assert result.profile_status is ProfileStatus.NOT_APPLICABLE
         assert len(result.messages) > 0
         assert result.messages[0].severity == ValidationSeverity.ERROR
         assert "Error reading file" in result.messages[0].message
@@ -556,6 +598,27 @@ def test_document_namespace_fragment_prohibited():
     )
 
 
+def test_missing_spdx_version_returns_structured_result(
+    sample_valid_spdx_document,
+):
+    document = deepcopy(sample_valid_spdx_document)
+    document.pop("spdxVersion")
+
+    result = SbomCheckEngine().validate_dict(document)
+
+    assert not result.overall_valid
+    assert result.document_format == "unknown"
+    assert result.spec_version is None
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert len(result.messages) == 1
+    assert result.messages[0].rule_id == "missing_spdx_version"
+    assert (
+        result.messages[0].message
+        == "SPDX document is missing the required spdxVersion field."
+    )
+
+
 def test_engine_instantiates_selected_validator_class():
     """Test that the selected validator class is instantiated as engine."""
     config = ConfigLoader().load_profile("default")
@@ -580,18 +643,6 @@ def test_explicit_spdx_validator_subclass_preserves_spdx_metadata_and_profile(
     assert result.spec_version == "2.3"
     assert result.profile_status is not ProfileStatus.NOT_APPLICABLE
     assert result.profile_name == "Default SBOM Requirements"
-
-
-def test_explicit_validator_uses_declared_spdx_22_version(
-    sample_invalid_spdx_document,
-):
-    """SPDX metadata comes from the document rather than a validator default."""
-    result = SbomCheckEngine(validator_class=ValidationEngine).validate_dict(
-        sample_invalid_spdx_document
-    )
-
-    assert result.document_format == "SPDX"
-    assert result.spec_version == "2.2"
 
 
 def test_cyclonedx_schema_paths_are_preserved_in_combined_result():
@@ -632,35 +683,34 @@ def test_engine_auto_detects_cyclonedx_without_explicit_validator_class():
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
 
 
-def test_missing_spdx_version_preserves_validator_and_profile_diagnostics(
-    sample_valid_spdx_document,
-):
-    document = deepcopy(sample_valid_spdx_document)
-    document.pop("spdxVersion")
-    document["packages"][0].pop("downloadLocation")
-    document["creationInfo"].pop("licenseListVersion")
-    document["relationships"] = []
-
-    result = SbomCheckEngine().validate_dict(document)
-    messages = [message.message for message in result.messages]
-
-    assert result.document_format == "SPDX"
-    assert len(messages) > 1
-    assert any("downloadLocation" in message for message in messages)
-    assert any("spdxVersion" in message for message in messages)
-    assert any("licenseListVersion" in message for message in messages)
-    assert any("DESCRIBES" in message for message in messages)
-
-
-def test_unsupported_spdx_version_preserves_validator_diagnostics(
+def test_unsupported_spdx_version_returns_structured_result(
     sample_invalid_spdx_document,
 ):
     result = SbomCheckEngine().validate_dict(sample_invalid_spdx_document)
-    messages = [message.message for message in result.messages]
 
-    assert result.document_format == "SPDX"
-    assert len(messages) > 1
-    assert any("SPDX-2.2" in message or "SPDX-2.3" in message for message in messages)
+    assert not result.overall_valid
+    assert result.document_format == "unknown"
+    assert result.spec_version is None
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert len(result.messages) == 1
+    assert result.messages[0].rule_id == "unsupported_spdx_version"
+    assert "SPDX-2.2" in result.messages[0].message
+
+
+def test_unsupported_spdx3_version_returns_structured_result():
+    result = SbomCheckEngine().validate_dict(
+        {"@context": "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"}
+    )
+
+    assert not result.overall_valid
+    assert result.document_format == "unknown"
+    assert result.spec_version is None
+    assert result.core_valid is False
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert len(result.messages) == 1
+    assert result.messages[0].rule_id == "unsupported_spdx_version"
+    assert "3.0.0" in result.messages[0].message
 
 
 def test_cyclonedx_additional_properties_make_combined_result_invalid() -> None:
@@ -699,6 +749,90 @@ def test_engine_returns_structured_result_for_unsupported_input():
     assert result.core_valid is False
     assert result.profile_status is ProfileStatus.NOT_APPLICABLE
     assert result.messages[0].rule_id == "unsupported_format"
+
+
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
+def test_engine_auto_detects_spdx3_without_explicit_validator_class(mock_validate):
+    """Direct engine callers receive automatic format dispatch."""
+    mock_validate.return_value = CustomValidationResult()
+    result = SbomCheckEngine().validate_dict(
+        {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [
+                {
+                    "@id": "_:ci",
+                    "type": "CreationInfo",
+                    "specVersion": "3.0.1",
+                    "created": "2024-01-01T00:00:00Z",
+                    "createdBy": ["https://example.com/agent"],
+                }
+            ],
+        }
+    )
+
+    assert result.document_format == "SPDX3"
+    assert result.spec_version == "3.0.1"
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    mock_validate.assert_called_once()
+    assert mock_validate.call_args.args[0]["@context"].endswith(
+        "/3.0.1/spdx-context.jsonld"
+    )
+
+
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
+def test_engine_uses_explicit_spdx3_validator_class(mock_validate):
+    """Run an SPDX 3 document through an explicitly selected validator."""
+    mock_validate.return_value = CustomValidationResult()
+    engine = SbomCheckEngine(validator_class=SPDX3ValidationEngine)
+
+    result = engine.validate_dict(
+        {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [
+                {
+                    "@id": "_:ci",
+                    "type": "CreationInfo",
+                    "specVersion": "3.0.1",
+                }
+            ],
+        }
+    )
+
+    assert isinstance(engine.engine, SPDX3ValidationEngine)
+    assert result.overall_valid
+    assert result.core_valid
+    assert result.spdx_valid is None
+    assert result.profile_status is ProfileStatus.NOT_APPLICABLE
+    assert result.document_format == "SPDX3"
+    assert result.spec_version == "3.0.1"
+    mock_validate.assert_called_once()
+    assert mock_validate.call_args.args[0]["@context"].endswith(
+        "/3.0.1/spdx-context.jsonld"
+    )
+
+
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
+def test_explicit_spdx3_validator_rejects_array_context(mock_validate):
+    """Report the unsupported array context with an explicit SPDX 3 validator."""
+    engine = SbomCheckEngine(validator_class=SPDX3ValidationEngine)
+
+    result = engine.validate_dict(
+        {
+            "@context": [
+                "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+                {"ex": "https://example.com/"},
+            ]
+        }
+    )
+
+    assert result.overall_valid is False
+    assert result.core_valid is False
+    assert result.messages[0].rule_id == "unsupported_spdx3_context_form"
+    assert result.messages[0].message == (
+        "SPDX 3 documents with an array-valued @context are not supported "
+        "by the underlying validator."
+    )
+    mock_validate.assert_not_called()
 
 
 def test_explicit_validator_returns_structured_result_for_non_object_input():

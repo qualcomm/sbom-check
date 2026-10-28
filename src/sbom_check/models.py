@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from warnings import warn as warn_deprecated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+if TYPE_CHECKING:
+    from sbom_validator.engine import ValidationResultProtocol
 
 
 class ValidationSeverity(str, Enum):
@@ -24,6 +27,7 @@ class DocumentFormat(str, Enum):
     """Supported SBOM document formats."""
 
     SPDX = "SPDX"
+    SPDX3 = "SPDX3"
     CYCLONEDX = "CycloneDX"
     UNKNOWN = "unknown"
 
@@ -43,6 +47,8 @@ class ValidationMessage(BaseModel):
     message: str
     rule_id: str | None = None
     field_path: str | None = None
+    json_path: str | None = None
+    affected_element: str | None = None
     section_reference: str | None = None
     found_value: Any | None = None
     expected_value: Any | None = None
@@ -54,6 +60,12 @@ class ValidationMessage(BaseModel):
 
         if self.field_path:
             parts.append(f"Field: {self.field_path}")
+
+        if self.json_path:
+            parts.append(f"JSON path: {self.json_path}")
+
+        if self.affected_element:
+            parts.append(f"Affected element: {self.affected_element}")
 
         if self.found_value is not None:
             parts.append(f"Found: {self.found_value}")
@@ -103,33 +115,68 @@ class SbomCheckResult(BaseModel):
     document_format: DocumentFormat = DocumentFormat.UNKNOWN
     spec_version: str | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_legacy_status_fields(cls, values: Any) -> Any:
+        """Derive new status fields for callers using the legacy fields."""
+        if not isinstance(values, dict):
+            return values
+
+        normalized = dict(values)
+        if "core_valid" not in normalized and isinstance(
+            normalized.get("spdx_valid"), bool
+        ):
+            normalized["core_valid"] = normalized["spdx_valid"]
+
+        if "profile_status" not in normalized and isinstance(
+            normalized.get("profile_valid"), bool
+        ):
+            normalized["profile_status"] = (
+                ProfileStatus.PASSED
+                if normalized["profile_valid"]
+                else ProfileStatus.FAILED
+            )
+
+        return normalized
+
     @classmethod
     def combine(  # pylint: disable=too-many-positional-arguments,too-many-locals  # noqa: PLR0917,RUF100
         cls,
-        core_result: Any = None,  # core validator result
+        spdx_result: ValidationResultProtocol | None = None,
         profile_result: SbomCheckResult | None = None,
         profile_name: str | None = None,
         file_path: str | None = None,
-        document_format: DocumentFormat = DocumentFormat.SPDX,
-        spec_version: str | None = "2.3",
+        document_format: DocumentFormat = DocumentFormat.UNKNOWN,
+        spec_version: str | None = None,
         *,
-        spdx_result: Any = None,
+        core_result: ValidationResultProtocol | None = None,
     ) -> SbomCheckResult:
-        """Combine core validation result with profile validation result.
+        """Combine a validation result with optional profile results.
 
-        ``spdx_result`` is deprecated; use ``core_result`` instead.
+        The first positional parameter retains its historical ``spdx_result``
+        meaning. New callers should pass ``core_result`` by keyword.
         """
-        if core_result is not None and spdx_result is not None:
-            raise TypeError("Pass either core_result or spdx_result, not both")
-        if spdx_result is not None:
+        using_legacy_spdx_result = spdx_result is not None
+        if spdx_result is not None and core_result is not None:
+            raise TypeError("Pass either spdx_result or core_result, not both")
+
+        if core_result is None:
+            core_result = spdx_result
+
+        if using_legacy_spdx_result:
             warn_deprecated(
                 "spdx_result is deprecated; use core_result instead",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            core_result = spdx_result
+            if document_format is DocumentFormat.UNKNOWN:
+                document_format = DocumentFormat.SPDX
+                if spec_version is None:
+                    spec_version = "2.3"
+
         if core_result is None:
             raise TypeError("Missing required argument: core_result")
+
         # Convert and collect all messages
         messages = cls._convert_validation_messages(core_result)
         if profile_result:
@@ -139,9 +186,10 @@ class SbomCheckResult(BaseModel):
         summary = cls._calculate_summary(messages)
 
         # Determine validity
-        core_valid = getattr(core_result, "is_valid", False)
+        core_valid = core_result.is_valid
         is_spdx_document = document_format is DocumentFormat.SPDX
         spdx_valid = core_valid if is_spdx_document else None
+
         profile_valid: bool | None
         if is_spdx_document:
             profile_valid = profile_result.overall_valid if profile_result else True
@@ -151,6 +199,7 @@ class SbomCheckResult(BaseModel):
         else:
             profile_valid = profile_result.overall_valid if profile_result else None
             profile_status = ProfileStatus.NOT_APPLICABLE
+
         overall_valid = (
             core_valid
             and (profile_result is None or profile_result.overall_valid)
@@ -193,7 +242,15 @@ class SbomCheckResult(BaseModel):
                     severity=severity_level,
                     message=raw_message.message,
                     rule_id=getattr(raw_message, "rule_id", None),
-                    field_path=getattr(raw_message, "field_path", getattr(raw_message, "path", None)),
+                    field_path=getattr(
+                        raw_message, "field_path", getattr(raw_message, "path", None)
+                    ),
+                    json_path=getattr(raw_message, "json_path", None),
+                    affected_element=getattr(raw_message, "affected_element", None),
+                    section_reference=getattr(raw_message, "section_reference", None),
+                    found_value=getattr(raw_message, "found_value", None),
+                    expected_value=getattr(raw_message, "expected_value", None),
+                    remediation=getattr(raw_message, "remediation", None),
                 )
                 messages.append(converted_message)
 
@@ -230,6 +287,9 @@ class SbomCheckResult(BaseModel):
         found_value: Any | None = None,
         expected_value: Any | None = None,
         remediation: str | None = None,
+        *,
+        affected_element: str | None = None,
+        json_path: str | None = None,
     ) -> None:
         """Add a validation message to the result."""
         msg = ValidationMessage(
@@ -237,6 +297,8 @@ class SbomCheckResult(BaseModel):
             message=message,
             rule_id=rule_id,
             field_path=field_path,
+            json_path=json_path,
+            affected_element=affected_element,
             section_reference=section_reference,
             found_value=found_value,
             expected_value=expected_value,
@@ -259,7 +321,9 @@ class SbomCheckResult(BaseModel):
                 info=current_summary.info,
             )
             self.overall_valid = False
-            self.profile_valid = False
+            if self.profile_valid is not None:
+                self.profile_valid = False
+                self.profile_status = ProfileStatus.FAILED
         elif severity == ValidationSeverity.WARNING:
             self.summary = ValidationSummary(
                 total_rules=current_summary.total_rules,

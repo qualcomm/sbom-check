@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sbom-check"
 dynamic = ["version"]
-description = "Multi-format SBOM validator for SPDX 2.3 and CycloneDX JSON documents"
+description = "Multi-format SBOM validator for SPDX 2.3, SPDX 3.0.1 and CycloneDX JSON documents"
 readme = "README.md"
 license = {text = "BSD-3-Clause"}
 authors = [
@@ -31,16 +31,20 @@ dependencies = [
     "pyyaml>=6.0.2",
     "rich>=13.0.0",
     "jinja2>=3.1.0",
+    "requests>=2.32.0",
     # spdx-validator dependencies
     "jsonschema>=4.25.1",
     # CycloneDX dependencies
     "cyclonedx-python-lib[json-validation]>=11.12,<12",
+    # spdx3-validator dependencies
+    "spdx3-validate==0.0.7",
 ]
 
 [project.scripts]
 sbom-check = "sbom_check.cli:main"
 spdx-validate = "spdx_validator.cli:main"
 cyclonedx-validate = "cyclone_validator.cli:main"
+sbom-spdx3-validate = "spdx3_validator.cli:main"
 
 [dependency-groups]
 dev = [
@@ -52,6 +56,7 @@ dev = [
     "mypy>=1.17.1",
     "ruff>=0.12.10",
     "types-pyyaml>=6.0.12",
+    "types-requests>=2.32.0",
     "types-click>=7.1.8",
     "types-jinja2>=2.11.9",
     "types-jsonschema>=4.25.1",
@@ -113,6 +118,7 @@ known-first-party = [
     "spdx_validator",
     "cyclone_validator",
     "sbom_validator",
+    "spdx3_validator",
 ]
 
 [tool.mypy]
@@ -188,6 +194,7 @@ source = [
     "spdx_validator",
     "cyclone_validator",
     "sbom_validator",
+    "spdx3_validator",
 ]
 omit = [
     "*/tests/*",
@@ -220,35 +227,35 @@ parallel_show_output = true
 description = "Run tests with Python 3.10"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "-m", "not integration", "--cov", "--cov-report=html", "--cov-report=term"]
 ]
 
 [tool.tox.env.py311]
 description = "Run tests with Python 3.11"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "-m", "not integration", "--cov", "--cov-report=html", "--cov-report=term"]
 ]
 
 [tool.tox.env.py312]
 description = "Run tests with Python 3.12"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "-m", "not integration", "--cov", "--cov-report=html", "--cov-report=term"]
 ]
 
 [tool.tox.env.py313]
 description = "Run tests with Python 3.13"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "-m", "not integration", "--cov", "--cov-report=html", "--cov-report=term"]
 ]
 
 [tool.tox.env.py314]
 description = "Run tests with Python 3.14"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "--cov-report=html", "--cov-report=term"]
+    ["pytest", "tests/", "-v", "-m", "not integration", "--cov", "--cov-report=html", "--cov-report=term"]
 ]
 
 # Ruff formatting
@@ -312,7 +319,7 @@ commands = [
 description = "Run tests in parallel"
 dependency_groups = ["dev"]
 commands = [
-    ["pytest", "tests/", "-v", "--cov=sbom_check", "--cov=spdx_validator", "--cov=cyclone_validator", "--cov=sbom_validator", "-n", "auto"]
+    ["pytest", "tests/", "-v", "--cov", "-n", "auto"]
 ]
 
 # Clean up generated files

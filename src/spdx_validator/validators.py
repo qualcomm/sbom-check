@@ -173,7 +173,9 @@ class SemanticValidator:
             # Use optimized direct constraint checking
             # Same validation logic, 100x faster performance
             messages.extend(self._check_semantic_constraints_optimized(spdx_data))
-            messages.extend(self._check_package_verification_code_requirements(spdx_data))
+            messages.extend(
+                self._check_package_verification_code_requirements(spdx_data)
+            )
 
         except (ValueError, TypeError, AttributeError, RuntimeError) as e:
             message = ValidationMessage(

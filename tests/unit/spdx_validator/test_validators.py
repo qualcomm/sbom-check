@@ -471,9 +471,7 @@ class TestSemanticValidator:
 
         assert not result.semantic_valid
         assert not result.is_valid
-        assert {
-            msg.rule_id for msg in result.messages
-        } == {
+        assert {msg.rule_id for msg in result.messages} == {
             "missing_package_verification_code",
             "semantic_invalid_related_spdx_id_reference",
         }

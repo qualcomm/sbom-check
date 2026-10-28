@@ -6,17 +6,51 @@ SPDX-License-Identifier: BSD-3-Clause
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 
-A multi-format SBOM validator supporting SPDX 2.3 and CycloneDX JSON documents. SPDX documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation.
+A multi-format SBOM validator supporting SPDX 2.3, SPDX 3.0.1, and CycloneDX JSON documents. SPDX 2.3 documents receive configurable completeness requirements; SPDX 3.0.1 documents receive core schema and semantic validation; CycloneDX documents currently receive structural schema validation.
 
 ## Features
 
-- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.3–1.7 documents
-- **CLI Tools**: The `sbom-check`, `spdx-validate`, and `cyclonedx-validate` commands are available
+- **Multi-format validation**: Automatic detection and validation of SPDX 2.3, SPDX 3.0.1, and CycloneDX JSON 1.3–1.7 documents
+- **CLI Tools**: The `sbom-check`, `spdx-validate`, `sbom-spdx3-validate` and `cyclonedx-validate` commands are available
 - **Configurable Requirements**: YAML-based configuration system with inheritance
 - **Multiple Profiles**: Built-in profiles for different use cases (basic, default, automotive, etc.)
 - **Rich Reporting**: Text and JSON output formats with detailed error messages
 - **Schema Validation**: JSON Schema validation against the declared document format and version
 - **Extensible**: Plugin system for custom validation rules
+
+## SPDX 3.0.1 validation scope
+
+SPDX 3.0.1 documents receive core SPDX validation only. This includes the
+SPDX 3.0.1 schema and semantic SHACL validation provided by the SPDX 3
+validator.
+
+When using the combined `sbom-check` result, `profile_status` describes the
+profile portion of validation:
+
+- `passed`: the applicable profile completed without profile errors.
+- `failed`: the applicable profile ran and reported profile errors.
+- `not_applicable`: no profile was run. This is the expected value for SPDX
+  3.0.1 documents.
+
+`profile_status` is independent of the core SPDX result. For the combined
+`SbomCheckResult`, use `overall_valid`, `core_valid`, `summary`, and the
+validation messages to assess validation. `document_format` and `spec_version`
+identify which core validator was used. A `not_applicable` profile status is
+not itself a profile failure.
+
+### Operational notes
+
+- Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL resources. The schema and SHACL resources are cached within each validation process, while the JSON-LD context is resolved for each input document. Resource requests use a finite timeout.
+- SPDX 3.0.1 validation accepts only the canonical top-level SPDX context and
+  rejects nested JSON-LD contexts before parsing. Restrict network and
+  filesystem access when validating untrusted documents; network isolation is
+  still recommended as defense in depth.
+- Resource failures return an error with rule ID
+  `remote_resource_unavailable`. They set `is_valid` to `false`, but leave
+  `schema_valid` and `semantic_valid` as `null` because those checks were not
+  evaluated. They are not SBOM content or semantic failures.
+- Each input file is validated independently; merged or cross-document validation is not supported.
+- An SPDX 3.0.1 document with an empty `@graph` is considered valid by the upstream validator. This is expected upstream behavior, but does not indicate that the document contains any SPDX elements.
 
 ## Quick Start
 
@@ -68,6 +102,11 @@ uv run sbom-check my-sbom.spdx.json
 SPDX-Validate: Core SPDX 2.3 specification validation
 ```bash
 uv run spdx-validate my-sbom.spdx.json
+```
+
+SPDX 3.0.1 validation with batch processing:
+```bash
+uv run sbom-spdx3-validate my-sbom.spdx.json
 ```
 
 Validate multiple files:
@@ -219,6 +258,7 @@ files were not analyzed, or provide the package verification code when they were
 - **1**: Validation errors found
 - **2**: Configuration or input file errors
 - **3**: Internal application errors
+- **4**: Validation could not run because a required remote SPDX resource was unavailable
 
 ## Examples
 
@@ -366,6 +406,29 @@ Options:
   -j, --jobs INTEGER           Number of parallel jobs for validation
   --help                       Show this message and exit.
 ```
+
+### sbom-spdx3-validate
+Project CLI for SPDX 3.0.1 validation. It adds recursive file discovery, batch
+processing, parallel jobs, normalized text or JSON output, and project-specific
+diagnostics, including parsing upstream SHACL errors into more human-readable
+messages, around the upstream SPDX 3 validator.
+
+```
+Usage: sbom-spdx3-validate [OPTIONS] PATHS...
+
+Options:
+  --output-format [text|json]  Output format for validation results
+  -r, --recursive              Recursively scan directories for SPDX files
+  --pattern TEXT               File pattern to match when scanning directories
+  -j, --jobs INTEGER           Number of parallel jobs for validation
+  --help                       Show this message and exit.
+```
+
+The `spdx3-validate` command is provided by the upstream `spdx3-validate`
+dependency. It offers the dependency's native single-document interface,
+including URL or standard-input support and SPDX version selection. Use
+`sbom-spdx3-validate` when you need this project's batch-oriented CLI and
+output format.
 
 ## Contributing
 

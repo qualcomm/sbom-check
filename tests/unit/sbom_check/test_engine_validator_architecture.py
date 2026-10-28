@@ -26,7 +26,7 @@ def test_spdx_and_cyclonedx_engines_implement_engine_validator() -> None:
 def test_cyclonedx_engine_has_shared_constructor_signature() -> None:
     """CycloneDX accepts the same configuration values as the SPDX engine."""
     engine = CycloneDXValidationEngine(
-        schema_path=Path('unused-schema.json'),
+        schema_path=Path("unused-schema.json"),
         enable_schema_validation=False,
         enable_semantic_validation=True,
     )
