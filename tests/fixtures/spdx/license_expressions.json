@@ -1,0 +1,61 @@
+{
+  "description": "SPDX license-expression cases for SbomCheckEngine license validation. Kept in JSON so the copyright/license checker does not read the expressions as license declarations. 'expected' is null (accepted), 'syntax error', 'unknown or undeclared license id(s)', 'misused license/exception', or 'invalid' (any rejection). 'declared' lists hasExtractedLicensingInfos ids and 'external' lists externalDocumentRefs ids.",
+  "cases": [
+    {"id": "spdx-id", "expression": "MIT", "expected": null},
+    {"id": "compound", "expression": "MIT OR Apache-2.0", "expected": null},
+    {"id": "with-exception", "expression": "Apache-2.0 WITH LLVM-exception", "expected": null},
+    {"id": "noassertion", "expression": "NOASSERTION", "expected": null},
+    {"id": "none", "expression": "NONE", "expected": null},
+
+    {"id": "empty", "expression": "", "expected": "syntax error"},
+    {"id": "whitespace", "expression": "   ", "expected": "syntax error"},
+
+    {"id": "free-text-short", "expression": "BSD", "expected": "unknown or undeclared license id(s)", "detail_contains": "BSD"},
+    {"id": "free-text-phrase", "expression": "Public Domain", "expected": "unknown or undeclared license id(s)", "detail_contains": "Public Domain"},
+    {"id": "noassertion-in-compound", "expression": "MIT AND NOASSERTION", "expected": "invalid", "detail_contains": "NOASSERTION"},
+    {"id": "unknown-named-like-exception", "expression": "MIT AND Unknown-exception-thing", "expected": "unknown or undeclared license id(s)"},
+
+    {"id": "dangling-operator", "expression": "MIT AND", "expected": "syntax error"},
+    {"id": "unclosed-paren", "expression": "(MIT", "expected": "syntax error"},
+    {"id": "empty-parens", "expression": "()", "expected": "syntax error"},
+    {"id": "slash-separator", "expression": "MIT/Apache-2.0", "expected": "syntax error"},
+
+    {"id": "license-as-exception", "expression": "MIT WITH Apache-2.0", "expected": "misused license/exception"},
+    {"id": "license-as-exception-reversed", "expression": "Apache-2.0 WITH MIT", "expected": "misused license/exception"},
+    {"id": "exception-without-with", "expression": "Classpath-exception-2.0", "expected": "misused license/exception"},
+    {"id": "license-ref-as-exception", "expression": "MIT WITH LicenseRef-foo", "declared": ["LicenseRef-foo"], "expected": "misused license/exception"},
+
+    {"id": "license-ref-declared", "expression": "LicenseRef-foo", "declared": ["LicenseRef-foo"], "expected": null},
+    {"id": "license-ref-declared-compound", "expression": "MIT AND LicenseRef-foo", "declared": ["LicenseRef-foo"], "expected": null},
+    {"id": "license-ref-other-declared", "expression": "LicenseRef-bar", "declared": ["LicenseRef-foo"], "expected": "unknown or undeclared license id(s)"},
+    {"id": "license-ref-undeclared", "expression": "LicenseRef-foo", "expected": "unknown or undeclared license id(s)"},
+    {"id": "native-license-ref-undeclared", "expression": "LicenseRef-scancode-public-domain", "expected": "unknown or undeclared license id(s)"},
+    {"id": "native-license-ref-declared", "expression": "LicenseRef-scancode-public-domain", "declared": ["LicenseRef-scancode-public-domain"], "expected": null},
+    {"id": "license-ref-named-like-exception", "expression": "LicenseRef-custom-exception", "declared": ["LicenseRef-custom-exception"], "expected": null},
+    {"id": "license-ref-named-like-exception-compound", "expression": "MIT AND LicenseRef-custom-exception", "declared": ["LicenseRef-custom-exception"], "expected": null},
+
+    {"id": "or-later", "expression": "MIT+", "expected": null},
+    {"id": "or-later-hyphenated", "expression": "Apache-2.0+", "expected": null},
+    {"id": "or-later-with-exception", "expression": "Apache-2.0+ WITH LLVM-exception", "expected": null},
+    {"id": "or-later-license-ref", "expression": "LicenseRef-foo+", "declared": ["LicenseRef-foo"], "expected": null},
+    {"id": "or-later-unknown", "expression": "NotAThing+", "expected": "unknown or undeclared license id(s)"},
+    {"id": "or-later-license-ref-undeclared", "expression": "LicenseRef-bar+", "expected": "unknown or undeclared license id(s)"},
+
+    {"id": "document-ref-undeclared", "expression": "DocumentRef-spdx-tool:LicenseRef-mylic", "expected": "unknown or undeclared license id(s)"},
+    {"id": "document-ref-declared", "expression": "DocumentRef-spdx-tool:LicenseRef-mylic", "external": ["DocumentRef-spdx-tool"], "expected": null},
+    {"id": "document-ref-named-like-exception", "expression": "DocumentRef-ext:LicenseRef-with-exception", "external": ["DocumentRef-ext"], "expected": null},
+    {"id": "document-ref-non-license-ref", "expression": "DocumentRef-ext:MIT", "external": ["DocumentRef-ext"], "expected": "invalid"},
+    {"id": "document-ref-empty-suffix", "expression": "DocumentRef-ext:", "external": ["DocumentRef-ext"], "expected": "invalid"},
+    {"id": "document-ref-bare", "expression": "DocumentRef-ext", "external": ["DocumentRef-ext"], "expected": "invalid"}
+  ],
+  "values": {
+    "valid": "MIT",
+    "free_text": "Public Domain",
+    "free_text_with_space": "NotA License",
+    "non_string": ["MIT"],
+    "lowercase_operator": "MIT and Apache-2.0",
+    "lowercase_operator_before_paren": "MIT and(Apache-2.0)",
+    "declared_license_ref": "LicenseRef-custom",
+    "document_ref": "DocumentRef-ext:LicenseRef-x"
+  }
+}

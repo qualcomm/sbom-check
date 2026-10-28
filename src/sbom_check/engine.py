@@ -6,9 +6,13 @@
 from __future__ import annotations
 
 import json
+import re
+from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from warnings import warn
+
+from license_expression import ExpressionError, get_spdx_licensing
 
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.detection import UnsupportedDocumentError, detect_document
@@ -24,8 +28,42 @@ from spdx_validator.engine import ValidationEngine
 from spdx_validator.models import DEFAULT_FILES_ANALYZED
 
 if TYPE_CHECKING:
+    from license_expression import Licensing
+
     from sbom_check.config.models import SbomCheckConfig
     from sbom_validator.engine import ValidatorEngine
+
+# SPDX sentinel values that are legal in license fields but are not license keys.
+_LICENSE_SENTINELS = {"NOASSERTION", "NONE"}
+
+# SPDX license-expression operators (AND/OR/WITH), matched case-insensitively so
+# lowercase use can be warned about; Annex D.2 says they should be uppercase.
+_OPERATOR_WORD = re.compile(r"\b(?:and|or|with)\b", re.IGNORECASE)
+
+# A cross-document license reference: DocumentRef-<id>:LicenseRef-<id> (Annex D).
+_DOCUMENT_REF = re.compile(r"(DocumentRef-[A-Za-z0-9.\-]+):LicenseRef-[A-Za-z0-9.\-]+")
+
+# Fixed prefixes the parser uses for WITH-operator misuse (as opposed to an
+# "Unknown license key(s): ..." error, which is a plain unknown symbol).
+_MISUSE_PREFIXES = (
+    "A plain license symbol cannot be used as an exception",
+    "A license exception symbol can only be used as an exception",
+)
+
+
+@cache
+def _licensing() -> Licensing:
+    """Return a cached SPDX licensing parser (building one is expensive)."""
+    return get_spdx_licensing()
+
+
+def _strip_or_later(key: str) -> str:
+    """Remove a single trailing ``+`` ("or later") suffix from a license key.
+
+    SPDX Annex D allows ``license-id "+"``; the parser does not split the ``+``
+    off, so ``<id>+`` must be reduced to ``<id>`` before looking the id up.
+    """
+    return key[:-1] if key.endswith("+") else key
 
 
 class SbomCheckEngine:
@@ -347,9 +385,223 @@ class SbomCheckEngine:
         if pkg_config.build_tools.require_build_tools:
             self._validate_build_tools_coverage(packages, result)
 
+        # License-expression validation is opt-in. Only compute the document-level
+        # context it needs (declared LicenseRef- ids, external document ids) when
+        # the flag is on, so a malformed hasExtractedLicensingInfos/externalDocumentRefs
+        # cannot crash profiles that don't use the feature.
+        if pkg_config.validate_license_expressions:
+            declared_license_refs = self._collect_declared_license_refs(sbom_data)
+            external_document_ids = self._collect_external_document_ids(sbom_data)
+
         # Validate each package
         for i, package in enumerate(packages):
             self._validate_single_package(package, i, result)
+            if pkg_config.validate_license_expressions:
+                self._validate_package_licenses(
+                    package, i, declared_license_refs, external_document_ids, result
+                )
+
+    @staticmethod
+    def _collect_declared_license_refs(spdx_data: dict[str, Any]) -> set[str]:
+        """Return the ``LicenseRef-`` ids declared in ``hasExtractedLicensingInfos``.
+
+        Tolerates malformed input: a missing/``null`` value, a non-list value, or
+        entries whose ``licenseId`` is absent or not a string are simply skipped
+        (the SPDX schema validator reports those separately).
+        """
+        infos = spdx_data.get("hasExtractedLicensingInfos")
+        if not isinstance(infos, list):
+            return set()
+        return {
+            info["licenseId"]
+            for info in infos
+            if isinstance(info, dict) and isinstance(info.get("licenseId"), str)
+        }
+
+    @staticmethod
+    def _collect_external_document_ids(spdx_data: dict[str, Any]) -> set[str]:
+        """Return the ``externalDocumentId`` values from ``externalDocumentRefs``.
+
+        These are the ``DocumentRef-`` ids a license expression may legally
+        reference. Malformed input is tolerated the same way as above.
+        """
+        refs = spdx_data.get("externalDocumentRefs")
+        if not isinstance(refs, list):
+            return set()
+        return {
+            ref["externalDocumentId"]
+            for ref in refs
+            if isinstance(ref, dict) and isinstance(ref.get("externalDocumentId"), str)
+        }
+
+    def _validate_package_licenses(
+        self,
+        package: dict[str, Any],
+        index: int,
+        declared_license_refs: set[str],
+        external_document_ids: set[str],
+        result: SbomCheckResult,
+    ) -> None:
+        """Validate that package license fields are valid SPDX expressions.
+
+        Each of ``licenseConcluded`` and ``licenseDeclared`` must be a valid SPDX
+        license expression, the sentinels ``NOASSERTION``/``NONE``, or reference a
+        ``LicenseRef-`` id declared in ``hasExtractedLicensingInfos`` (or a
+        ``DocumentRef-`` matching an ``externalDocumentRefs`` entry).
+        """
+        package_id = self._get_package_identifier(package, index)
+
+        for field in ("licenseConcluded", "licenseDeclared"):
+            if (value := package.get(field)) is None:
+                continue
+
+            field_path = f"packages[{index}].{field}"
+
+            # A non-string value gets a clear type error here rather than being
+            # stringified and reported as a bogus license symbol.
+            if not isinstance(value, str):
+                result.add_message(
+                    ValidationSeverity.ERROR,
+                    f"{package_id}: Field '{field}' must be a string license "
+                    f"expression, got {type(value).__name__}",
+                    rule_id="invalid_license_expression",
+                    field_path=field_path,
+                    found_value=value,
+                    remediation="Provide the license as a string SPDX expression",
+                )
+                continue
+
+            detail = self._license_expression_error(
+                value, declared_license_refs, external_document_ids
+            )
+            if detail is not None:
+                result.add_message(
+                    ValidationSeverity.ERROR,
+                    f"{package_id}: Field '{field}' is not a valid SPDX license "
+                    f"expression ({detail})",
+                    rule_id="invalid_license_expression",
+                    field_path=field_path,
+                    found_value=value,
+                    remediation=(
+                        "Use a valid SPDX license expression, 'NOASSERTION'/'NONE', "
+                        "or a 'LicenseRef-' declared in hasExtractedLicensingInfos"
+                    ),
+                )
+            elif lowercase := self._lowercase_operators(value):
+                result.add_message(
+                    ValidationSeverity.WARNING,
+                    f"{package_id}: Field '{field}' uses lowercase operator(s) "
+                    f"({', '.join(lowercase)}); SPDX operators should be uppercase",
+                    rule_id="lowercase_license_operator",
+                    field_path=field_path,
+                    found_value=value,
+                    remediation="Write AND/OR/WITH in uppercase",
+                )
+
+    def _license_expression_error(
+        self,
+        value: str,
+        declared_license_refs: set[str],
+        external_document_ids: set[str],
+    ) -> str | None:
+        """Classify why ``value`` is not an acceptable SPDX license expression.
+
+        Returns ``None`` when the expression is acceptable, otherwise a short
+        human-readable detail describing the failure kind (syntax error, unknown
+        license id, misused exception, or undeclared license reference).
+        """
+        # An empty value is not a license expression; SPDX uses NONE/NOASSERTION
+        # to say "no license" or "not known".
+        if not (text := value.strip()):
+            return "syntax error: empty expression"
+        if text in _LICENSE_SENTINELS:
+            return None
+
+        licensing = _licensing()
+
+        # Parse first to catch syntax errors; validate() cannot report unknown-key
+        # symbols for a syntactically invalid expression (and raises on some).
+        try:
+            parsed = licensing.parse(text, validate=False, strict=False)
+            # strict=True additionally flags misuse such as a plain license used
+            # as a "WITH" exception, which a non-strict validate() silently accepts.
+            info = licensing.validate(text, strict=True)
+        except ExpressionError as exc:
+            return f"syntax error: {exc}"
+        except (IndexError, ValueError, AttributeError):
+            # The library has internal crash paths on some malformed inputs, e.g.
+            # validate("()") raises IndexError and a "/"-separated pair of ids
+            # raises AttributeError; treat them as syntax errors. Recheck these
+            # when upgrading license-expression.
+            return "syntax error: invalid expression"
+
+        # Symbols the parser flagged as misused: a plain license on the right of
+        # WITH, or an exception used without WITH. These are keyed off the parser's
+        # fixed message prefixes, not a substring of the symbol name (a declared
+        # LicenseRef- whose id contains "exception" must not be mistaken for one).
+        if misuse := [err for err in info.errors if err.startswith(_MISUSE_PREFIXES)]:
+            return f"misused license/exception: {misuse[0]}"
+
+        invalid = [
+            symbol
+            for symbol in info.invalid_symbols
+            if not self._symbol_is_known(
+                symbol, declared_license_refs, external_document_ids
+            )
+        ]
+        # Every LicenseRef- must be declared in hasExtractedLicensingInfos, even
+        # ids the parser recognises natively (its built-in ScanCode refs). A
+        # trailing "+" ("or later") is part of the operator, not the id.
+        undeclared = [
+            key
+            for key in licensing.license_keys(parsed)
+            if _strip_or_later(key).startswith("LicenseRef-")
+            and _strip_or_later(key) not in declared_license_refs
+        ]
+        unknown = list(dict.fromkeys([*invalid, *undeclared]))
+        return (
+            f"unknown or undeclared license id(s): {', '.join(unknown)}"
+            if unknown
+            else None
+        )
+
+    @staticmethod
+    def _symbol_is_known(
+        symbol: str,
+        declared_license_refs: set[str],
+        external_document_ids: set[str],
+    ) -> bool:
+        """Return whether an ``invalid_symbols`` entry should be excused.
+
+        Only called when the parser reported no misuse, so a declared
+        ``LicenseRef-`` here is genuinely an ordinary license symbol.
+        """
+        # A cross-document DocumentRef-<id>:LicenseRef-<id> is accepted when its
+        # DocumentRef- part matches a declared externalDocumentRefs entry; we
+        # can't resolve the referenced document, so we don't ERROR on it. The
+        # full form is required (a bare DocumentRef-<id>, or one followed by
+        # anything but a LicenseRef-, is not).
+        if ref := _DOCUMENT_REF.fullmatch(symbol):
+            return ref.group(1) in external_document_ids
+        # Strip a trailing "+" ("or later") before looking the base id up.
+        base = _strip_or_later(symbol)
+        if base.startswith("LicenseRef-"):
+            return base in declared_license_refs
+        return base in _licensing().known_symbols
+
+    @staticmethod
+    def _lowercase_operators(value: str) -> list[str]:
+        """Return distinct lowercase SPDX operators used in ``value``.
+
+        SPDX Annex D.2 says operators should be matched case-sensitively; the
+        parser accepts lowercase, so we surface it as a WARNING rather than fail.
+        """
+        # Word-boundary match so operators adjacent to parentheses are found too,
+        # e.g. "<id> and(<id>)".
+        found = [
+            token for token in _OPERATOR_WORD.findall(value) if token != token.upper()
+        ]
+        return list(dict.fromkeys(found))
 
     def _validate_build_tools_coverage(
         self, packages: list[dict[str, Any]], result: SbomCheckResult

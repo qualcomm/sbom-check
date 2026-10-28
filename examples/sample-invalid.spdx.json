@@ -20,8 +20,8 @@
       "downloadLocation": "NONE",
       "filesAnalyzed": false,
       "homepage": "https://example.com/myapp",
-      "licenseConcluded": "Apache-2.0",
-      "licenseDeclared": "Apache-2.0",
+      "licenseConcluded": "Apache 2.0",
+      "licenseDeclared": "Public Domain",
       "copyrightText": "Copyright (c) 2024 Example Corp"
     }
   ],

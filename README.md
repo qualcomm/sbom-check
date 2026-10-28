@@ -129,6 +129,15 @@ Example JSON result:
 - Document namespace validation
 - External references requirements (PURL, CPE)
 - Files analyzed business logic validation
+- SPDX license-expression validation on package `licenseConcluded`/`licenseDeclared`
+  (`validate_license_expressions`)
+
+> **Behavior change:** as of this release the default profile validates package
+> license expressions. Packages whose `licenseConcluded`/`licenseDeclared` contain
+> free text (e.g. `"BSD"`, `"Public Domain"`) instead of a valid SPDX license
+> expression now fail validation (ERROR, exit code `1`). A `LicenseRef-` is
+> accepted only when declared in `hasExtractedLicensingInfos`. Use the
+> `basic_spdx` profile, or set `validate_license_expressions: false`, to opt out.
 
 ## Configuration System
 
@@ -161,6 +170,10 @@ document_requirements:
       prohibit_fragment: true
 
 package_requirements:
+  # Validate that package licenseConcluded/licenseDeclared are valid SPDX
+  # license expressions (not free text). On by default in the default profile.
+  validate_license_expressions: true
+
   build_tools:
     require_build_tools: true
     examples: ["GCC", "Clang", "Maven", "CMake"]
