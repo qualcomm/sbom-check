@@ -5,14 +5,13 @@
 
 from __future__ import annotations
 
-import json
 import socket
 from dataclasses import dataclass
 from functools import lru_cache
-from urllib.request import urlopen
 
 import jsonschema
 import rdflib
+import requests
 from spdx3_validate.core import SpdxValidateError, schema_validator
 from spdx3_validate.spdx_versions import SpdxVersion, find_version
 
@@ -41,15 +40,17 @@ def load_validation_resources() -> ValidationResources:
     if (version := find_version(SPDX_CONTEXT_URL)) is None:
         raise SpdxValidateError(f"Unknown SPDX version {SPDX_VERSION}")
 
-    with urlopen(
+    with requests.get(
         version.schema_url, timeout=VALIDATION_RESOURCE_TIMEOUT_SECONDS
     ) as response:
-        schema = json.load(response)
+        response.raise_for_status()
+        schema = response.json()
 
-    with urlopen(
+    with requests.get(
         version.shacl_url, timeout=VALIDATION_RESOURCE_TIMEOUT_SECONDS
     ) as response:
-        shacl_data = response.read()
+        response.raise_for_status()
+        shacl_data = response.content
 
     shacl_graph = rdflib.Graph()
     shacl_graph.parse(
