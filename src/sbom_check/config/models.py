@@ -122,6 +122,7 @@ class PackageRequirementsConfig(BaseModel):
     build_tools: BuildToolsConfig = Field(default_factory=BuildToolsConfig)
     external_refs: ExternalRefsConfig = Field(default_factory=ExternalRefsConfig)
     files_analyzed_rules: FilesAnalyzedRule = Field(default_factory=FilesAnalyzedRule)
+    validate_license_expressions: bool = False
 
 
 class FileRequirementsConfig(BaseModel):
@@ -290,6 +291,7 @@ class SbomCheckConfig(BaseModel):
                     "copyrightText",
                     "externalRefs",
                 ],
+                validate_license_expressions=True,
                 build_tools=BuildToolsConfig(
                     require_build_tools=True,
                     description="All build tools, compilers, interpreters must be included",
