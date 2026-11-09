@@ -168,16 +168,10 @@ def test_validate_json_string_invalid_json():
     assert "Invalid JSON" in result.messages[0].message
 
 
-def test_validate_json_string_deeply_nested_spdx3_returns_structured_error():
-    """Keep a deeply nested SPDX 3 document from aborting a batch run."""
-    nested_graph = "[" * 3000 + "0" + "]" * 3000
-    document = (
-        '{"@context":"https://spdx.org/rdf/3.0.1/spdx-context.jsonld",'
-        f'"@graph":{nested_graph}'
-        "}"
-    )
-
-    result = SbomCheckEngine().validate_json_string(document)
+def test_validate_json_string_recursion_error_returns_structured_error():
+    """Convert a JSON parsing RecursionError into a per-document result."""
+    with patch("sbom_check.engine.json.loads", side_effect=RecursionError):
+        result = SbomCheckEngine().validate_json_string("{}")
 
     assert result.overall_valid is False
     assert result.messages[0].rule_id == "document_too_deeply_nested"

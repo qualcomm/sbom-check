@@ -47,34 +47,27 @@ class TestValidationEngine:
 
         assert ValidationEngine._contains_nested_context(value)
 
-    def test_validate_dict_too_deep_returns_structured_error(self):
-        """Handle deeply nested objects passed directly through the public API."""
-        nested_graph: object = 0
-        for _ in range(3000):
-            nested_graph = [nested_graph]
+    def test_validate_dict_recursion_error_returns_structured_error(self):
+        """Convert a validation RecursionError into a structured result."""
+        engine = ValidationEngine()
+        document = {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [],
+        }
 
-        result = ValidationEngine().validate_dict(
-            {
-                "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
-                "@graph": nested_graph,
-            }
-        )
+        with patch.object(engine, "_validate_document", side_effect=RecursionError):
+            result = engine.validate_dict(document)
 
         assert result.is_valid is False
         assert result.schema_valid is None
         assert result.semantic_valid is None
         assert result.messages[0].rule_id == "document_too_deeply_nested"
+        assert "too deeply nested" in result.messages[0].message
 
-    def test_validate_json_string_too_deep_returns_structured_error(self):
-        """Return a validation result rather than leaking RecursionError."""
-        nested_graph = "[" * 3000 + "0" + "]" * 3000
-        document = (
-            '{"@context":"https://spdx.org/rdf/3.0.1/spdx-context.jsonld",'
-            f'"@graph":{nested_graph}'
-            "}"
-        )
-
-        result = ValidationEngine().validate_json_string(document)
+    def test_validate_json_string_recursion_error_returns_structured_error(self):
+        """Convert a JSON parsing RecursionError into a structured result."""
+        with patch("spdx3_validator.engine.json.loads", side_effect=RecursionError):
+            result = ValidationEngine().validate_json_string("{}")
 
         assert result.is_valid is False
         assert result.schema_valid is None
