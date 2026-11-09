@@ -168,6 +168,38 @@ def test_validate_json_string_invalid_json():
     assert "Invalid JSON" in result.messages[0].message
 
 
+def test_validate_json_string_deeply_nested_spdx3_returns_structured_error():
+    """Keep a deeply nested SPDX 3 document from aborting a batch run."""
+    nested_graph = "[" * 3000 + "0" + "]" * 3000
+    document = (
+        '{"@context":"https://spdx.org/rdf/3.0.1/spdx-context.jsonld",'
+        f'"@graph":{nested_graph}'
+        "}"
+    )
+
+    result = SbomCheckEngine().validate_json_string(document)
+
+    assert result.overall_valid is False
+    assert result.messages[0].rule_id == "document_too_deeply_nested"
+    assert "too deeply nested" in result.messages[0].message
+
+
+def test_validate_dict_recursion_error_returns_structured_error():
+    """Convert validator recursion failures to per-document results."""
+    engine = SbomCheckEngine()
+    core_engine = Mock()
+    core_engine.validate_dict.side_effect = RecursionError
+    engine.engine = core_engine
+
+    result = engine.validate_dict(
+        {"SPDXID": "SPDXRef-DOCUMENT", "spdxVersion": "SPDX-2.3"}
+    )
+
+    assert result.overall_valid is False
+    assert result.messages[0].rule_id == "document_too_deeply_nested"
+    assert "too deeply nested" in result.messages[0].message
+
+
 @patch("sbom_check.engine.ValidationEngine")
 def test_validate_json_string_valid_json(mock_validation_engine):
     """Test validation with valid JSON structure."""

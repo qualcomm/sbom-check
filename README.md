@@ -40,7 +40,14 @@ not itself a profile failure.
 
 ### Operational notes
 
-- Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL resources. The schema and SHACL resources are cached within each validation process, while the JSON-LD context is resolved for each input document. Resource requests use a finite timeout.
+- Validation requires outbound access to SPDX-hosted contexts, schemas, and SHACL
+  resources. Schema and SHACL resources are cached per validation process, while
+  the JSON-LD context is resolved for each input document. Schema and SHACL
+  downloads use finite timeouts.
+- CLI entry points set a 30-second default socket timeout for JSON-LD context
+  resolution only when none is configured. Library engine calls leave the process
+  socket default unchanged.
+- Schema and SHACL resources are fetched with `requests`, which uses the `certifi` CA bundle by default; configure `REQUESTS_CA_BUNDLE` for custom CAs. JSON-LD context resolution uses the system CA store.
 - SPDX 3.0.1 validation accepts only the canonical top-level SPDX context and
   rejects nested JSON-LD contexts before parsing. Restrict network and
   filesystem access when validating untrusted documents; network isolation is

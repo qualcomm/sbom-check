@@ -163,16 +163,16 @@ class SbomCheckResult(BaseModel):
         if core_result is None:
             core_result = spdx_result
 
-        if using_legacy_spdx_result:
+        if using_legacy_spdx_result and document_format is DocumentFormat.UNKNOWN:
             warn_deprecated(
-                "spdx_result is deprecated; use core_result instead",
+                "spdx_result is deprecated; use core_result instead and pass "
+                "document_format= and spec_version= explicitly",
                 DeprecationWarning,
                 stacklevel=2,
             )
-            if document_format is DocumentFormat.UNKNOWN:
-                document_format = DocumentFormat.SPDX
-                if spec_version is None:
-                    spec_version = "2.3"
+            document_format = DocumentFormat.SPDX
+            if spec_version is None:
+                spec_version = "2.3"
 
         if core_result is None:
             raise TypeError("Missing required argument: core_result")

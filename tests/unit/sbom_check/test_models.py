@@ -3,6 +3,7 @@
 
 """Unit tests for data models."""
 
+import warnings
 from types import SimpleNamespace
 
 import pytest
@@ -21,9 +22,11 @@ def test_sbom_check_result_combine_accepts_deprecated_spdx_result():
     """The old keyword remains supported with a deprecation warning."""
     core_result = SimpleNamespace(is_valid=True, messages=[])
 
-    with pytest.warns(DeprecationWarning, match="spdx_result is deprecated"):
+    with pytest.warns(DeprecationWarning) as warning:
         result = SbomCheckResult.combine(spdx_result=core_result)
 
+    assert "spdx_result is deprecated" in str(warning[0].message)
+    assert "document_format= and spec_version= explicitly" in str(warning[0].message)
     assert result.core_valid is True
     assert result.profile_valid is True
     assert result.profile_status is ProfileStatus.PASSED
@@ -134,6 +137,28 @@ def test_combine_legacy_result_with_explicit_spdx3_format_keeps_neutral_metadata
     assert result.spec_version is None
     assert result.profile_valid is None
     assert result.spdx_valid is None
+
+
+def test_combine_positional_cyclonedx_result_does_not_warn():
+    """Do not mistake main's positional format-aware form for legacy SPDX use."""
+    core_result = SimpleNamespace(is_valid=True, messages=[])
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = SbomCheckResult.combine(
+            core_result,
+            None,
+            None,
+            "bom.cdx.json",
+            DocumentFormat.CYCLONEDX,
+            "1.6",
+        )
+
+    assert caught == []
+    assert result.document_format is DocumentFormat.CYCLONEDX
+    assert result.spec_version == "1.6"
+    assert result.spdx_valid is None
+    assert result.profile_valid is None
+    assert result.profile_name is None
 
 
 def test_combine_core_result_keyword_keeps_unknown_format():

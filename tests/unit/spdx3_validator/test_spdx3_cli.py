@@ -60,9 +60,11 @@ def test_batch_continues_when_one_file_has_structured_input_error(tmp_path):
     with (
         patch("spdx3_validator.cli.ProcessPoolExecutor", ThreadPoolExecutor),
         patch("spdx3_validator.cli.validate_single_file", side_effect=validate_file),
+        patch("spdx3_validator.cli.configure_network_timeout") as configure_timeout,
     ):
         result = CliRunner().invoke(main, [str(tmp_path)])
 
+    configure_timeout.assert_called()
     assert result.exit_code == 1
     assert "bad.spdx.json" in result.output
     assert "good.spdx.json" in result.output
@@ -86,8 +88,12 @@ def test_remote_resource_failure_has_distinct_exit_code(tmp_path):
         ],
     )
 
-    with patch("spdx3_validator.cli.validate_single_file") as validate_file:
+    with (
+        patch("spdx3_validator.cli.validate_single_file") as validate_file,
+        patch("spdx3_validator.cli.configure_network_timeout") as configure_timeout,
+    ):
         validate_file.return_value = (document, validation_result)
         result = CliRunner().invoke(main, [str(document)])
 
+    configure_timeout.assert_called_once_with()
     assert result.exit_code == 4

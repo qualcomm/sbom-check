@@ -135,6 +135,38 @@ class TestValidationEngine:
         assert "Invalid JSON" in result.messages[0].message
         assert result.messages[0].rule_id == "json_parse_error"
 
+    def test_validate_json_string_too_deep_returns_structured_error(self) -> None:
+        """Return a result instead of propagating RecursionError from validation."""
+        nested = "[" * 3000 + "0" + "]" * 3000
+        json_string = (
+            '{"SPDXID":"SPDXRef-DOCUMENT","spdxVersion":"SPDX-2.3",'
+            f'"deeplyNested":{nested}'
+            "}"
+        )
+
+        result = ValidationEngine().validate_json_string(json_string)
+
+        assert result.is_valid is False
+        assert result.messages[0].rule_id == "document_too_deeply_nested"
+        assert "too deeply nested" in result.messages[0].message
+
+    def test_validate_dict_too_deep_returns_structured_error(self) -> None:
+        """Handle deep dictionaries passed directly through the public API."""
+        deeply_nested: Any = 0
+        for _ in range(3000):
+            deeply_nested = [deeply_nested]
+        document = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "spdxVersion": "SPDX-2.3",
+            "deeplyNested": deeply_nested,
+        }
+
+        result = ValidationEngine().validate_dict(document)
+
+        assert result.is_valid is False
+        assert result.messages[0].rule_id == "document_too_deeply_nested"
+        assert "too deeply nested" in result.messages[0].message
+
     def test_legacy_json_keyword_is_supported_with_warning(self) -> None:
         engine = ValidationEngine()
 

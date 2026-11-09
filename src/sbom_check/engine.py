@@ -145,10 +145,29 @@ class SbomCheckEngine:
                 rule_id="json_parse_error",
                 file_path=file_path,
             )
+        except RecursionError:
+            return self._early_failure_result(
+                "Document is too deeply nested to validate.",
+                rule_id="document_too_deeply_nested",
+                file_path=file_path,
+            )
 
         return self.validate_dict(sbom_data, file_path)
 
     def validate_dict(
+        self, sbom_data: object, file_path: str | None = None
+    ) -> SbomCheckResult:
+        """Validate an SBOM document from dictionary."""
+        try:
+            return self._validate_dict(sbom_data, file_path)
+        except RecursionError:
+            return self._early_failure_result(
+                "Document is too deeply nested to validate.",
+                rule_id="document_too_deeply_nested",
+                file_path=file_path,
+            )
+
+    def _validate_dict(
         self, sbom_data: object, file_path: str | None = None
     ) -> SbomCheckResult:
         """Validate an SBOM document from dictionary.

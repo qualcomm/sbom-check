@@ -15,6 +15,7 @@ from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from spdx3_validator.engine import ValidationEngine
 from spdx3_validator.models import ValidationResult, ValidationSeverity
+from spdx3_validator.resources import configure_network_timeout
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 
@@ -184,6 +185,7 @@ def main(
 
     if len(files_to_validate) == 1:
         # Single file - no need for parallel processing
+        configure_network_timeout()
         file_path = files_to_validate[0]
         _, result = validate_single_file(file_path)
         results.append((file_path, result))
@@ -192,7 +194,10 @@ def main(
         remote_resource_failure = _has_remote_resource_failure(result)
     else:
         # Multiple files - use parallel processing
-        with ProcessPoolExecutor(max_workers=jobs) as executor:
+        with ProcessPoolExecutor(
+            max_workers=jobs,
+            initializer=configure_network_timeout,
+        ) as executor:
             # Submit all validation tasks
             future_to_file = {
                 executor.submit(validate_single_file, file_path): file_path

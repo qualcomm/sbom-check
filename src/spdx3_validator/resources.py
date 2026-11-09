@@ -22,30 +22,53 @@ VALIDATION_RESOURCE_TIMEOUT_SECONDS = 30
 
 @dataclass(frozen=True)
 class ValidationResources:
-    """Cached resources required to validate SPDX documents."""
+    """Resources required by the enabled SPDX validation stages."""
 
-    schema_validator: jsonschema.protocols.Validator
-    shacl_graph: rdflib.Graph
+    schema_validator: jsonschema.protocols.Validator | None
+    shacl_graph: rdflib.Graph | None
     version: SpdxVersion
 
 
 def configure_network_timeout() -> None:
-    """Set the default socket timeout used by rdflib context resolution."""
-    socket.setdefaulttimeout(VALIDATION_RESOURCE_TIMEOUT_SECONDS)
+    """Set the process socket timeout for CLI context resolution.
+
+    This changes process-global state and should be called once during CLI or
+    worker initialization, not for each library validation.
+    """
+    if socket.getdefaulttimeout() is None:
+        socket.setdefaulttimeout(VALIDATION_RESOURCE_TIMEOUT_SECONDS)
 
 
 @lru_cache(maxsize=1)
-def load_validation_resources() -> ValidationResources:
-    """Load and cache SPDX schema and SHACL resources for this process."""
+def _get_spdx_version() -> SpdxVersion:
+    """Return metadata for the supported SPDX version."""
     if (version := find_version(SPDX_CONTEXT_URL)) is None:
         raise SpdxValidateError(f"Unknown SPDX version {SPDX_VERSION}")
+    return version
 
+
+@lru_cache(maxsize=1)
+def _load_schema_validator() -> jsonschema.protocols.Validator:
+    """Download and cache the SPDX JSON schema validator."""
+    version = _get_spdx_version()
     with requests.get(
         version.schema_url, timeout=VALIDATION_RESOURCE_TIMEOUT_SECONDS
     ) as response:
         response.raise_for_status()
         schema = response.json()
 
+    try:
+        return schema_validator(schema)
+    except jsonschema.exceptions.SchemaError as error:
+        raise SpdxValidateError(
+            f"Invalid schema {version.schema_url}: {error}"
+        ) from error
+
+
+@lru_cache(maxsize=1)
+def _load_shacl_graph() -> rdflib.Graph:
+    """Download, parse, and cache the SPDX SHACL graph."""
+    version = _get_spdx_version()
     with requests.get(
         version.shacl_url, timeout=VALIDATION_RESOURCE_TIMEOUT_SECONDS
     ) as response:
@@ -58,12 +81,18 @@ def load_validation_resources() -> ValidationResources:
         format="turtle",
         publicID=version.shacl_url,
     )
+    return shacl_graph
 
-    try:
-        validator = schema_validator(schema)
-    except jsonschema.exceptions.SchemaError as error:
-        raise SpdxValidateError(
-            f"Invalid schema {version.schema_url}: {error}"
-        ) from error
 
-    return ValidationResources(validator, shacl_graph, version)
+def load_validation_resources(
+    enable_schema_validation: bool = True,
+    enable_semantic_validation: bool = True,
+) -> ValidationResources:
+    """Load only the SPDX resources needed by the enabled validation stages."""
+    return ValidationResources(
+        schema_validator=(
+            _load_schema_validator() if enable_schema_validation else None
+        ),
+        shacl_graph=_load_shacl_graph() if enable_semantic_validation else None,
+        version=_get_spdx_version(),
+    )

@@ -42,7 +42,10 @@ def test_worker_reuses_its_configured_engine() -> None:
     sbom_cli._worker_state.clear()
     try:
         config = Mock()
-        with patch("sbom_check.cli.SbomCheckEngine") as engine_class:
+        with (
+            patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+            patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+        ):
             engine = engine_class.return_value
             engine.validate_file.return_value = Mock()
 
@@ -50,6 +53,7 @@ def test_worker_reuses_its_configured_engine() -> None:
             sbom_cli.validate_single_file(Path("first.spdx.json"), "default", None)
             sbom_cli.validate_single_file(Path("second.spdx.json"), "default", None)
 
+        configure_timeout.assert_called_once_with()
         engine_class.assert_called_once_with(config)
         assert engine.validate_file.call_count == 2
     finally:
@@ -314,10 +318,14 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
         ],
     )
 
-    with patch("sbom_check.cli.SbomCheckEngine") as engine_class:
+    with (
+        patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+        patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+    ):
         engine_class.return_value.validate_file.return_value = result
         cli_result = runner.invoke(main, [str(document)])
 
+    configure_timeout.assert_called_once_with()
     assert cli_result.exit_code == 4
 
 
@@ -344,7 +352,7 @@ def test_cli_nested_context_is_input_failure(mock_validate, tmp_path):
     result = CliRunner().invoke(main, [str(document), "--output-format", "json"])
 
     assert result.exit_code == 1
-    assert '"rule_id": "spdx3_validation_input_error"' in result.output
+    assert '"rule_id": "unsupported_spdx3_context_form"' in result.output
     assert '"rule_id": "remote_resource_unavailable"' not in result.output
     mock_validate.assert_not_called()
 

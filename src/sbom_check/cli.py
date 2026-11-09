@@ -28,6 +28,7 @@ from sbom_check.config.loader import ConfigLoader
 from sbom_check.engine import SbomCheckEngine
 from sbom_check.models import ProfileStatus, ValidationSeverity
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+from spdx3_validator.resources import configure_network_timeout
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 
@@ -60,7 +61,8 @@ def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
 
 
 def _initialize_worker(sbom_config: SbomCheckConfig) -> None:
-    """Create the reusable validation engine for one worker process."""
+    """Configure network access and create the worker's reusable engine."""
+    configure_network_timeout()
     _worker_state["engine"] = SbomCheckEngine(sbom_config)
 
 
@@ -371,6 +373,7 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
             # Single file - no need for parallel processing
             file_path = files_to_validate[0]
 
+            configure_network_timeout()
             sbom_config = _load_config(profile, config)
 
             # Detection and validator selection are owned by SbomCheckEngine.

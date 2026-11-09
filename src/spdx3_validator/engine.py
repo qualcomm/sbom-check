@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 
+import requests
 from rdflib.exceptions import ParserError
 from rdflib.plugins.parsers.notation3 import BadSyntax
 from spdx3_validate.core import (
@@ -33,16 +34,48 @@ from spdx3_validator.resources import (
     SPDX_CONTEXT_URL,
     SPDX_VERSION,
     ValidationResources,
-    configure_network_timeout,
     load_validation_resources,
 )
+
+
+class _ResourceLoadError(OSError):
+    """Represent non-requests failures while loading validation resources."""
 
 
 class ValidationEngine(ValidatorEngine):
     """Validation engine for SPDX 3.0.1 documents."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        schema_path: str | Path | None = None,
+        enable_schema_validation: bool = True,
+        enable_semantic_validation: bool = True,
+    ) -> None:
         """Initialize the validation engine for SPDX 3.0.1."""
+        if schema_path is not None:
+            raise ValueError("A custom schema path is not supported for SPDX 3.")
+        self.enable_schema_validation = enable_schema_validation
+        self.enable_semantic_validation = enable_semantic_validation
+
+    def validate(self, document: dict[str, Any], spec_version: str) -> ValidationResult:
+        """Validate a parsed SPDX document against the requested version."""
+        if (version := spec_version.removeprefix("SPDX-")) != SPDX_VERSION:
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "Document SPDX version does not match the requested "
+                            f"version {version}"
+                        ),
+                        rule_id="spec_version_mismatch",
+                    )
+                ],
+                schema_valid=None,
+                semantic_valid=None,
+            )
+        return self.validate_dict(document)
 
     @staticmethod
     def _unique_errors(
@@ -66,63 +99,81 @@ class ValidationEngine(ValidatorEngine):
         return unique
 
     @staticmethod
-    def _user_facing_error(error: Exception, source_path: Path | None) -> str:
-        """Remove the temporary source path from a validation error message."""
-        message = str(error)
-        if source_path is not None:
-            message = message.replace(str(source_path), "document")
-        return message
-
-    @staticmethod
     def _contains_nested_context(value: Any) -> bool:
         """Return whether a JSON-LD value contains a nested @context key."""
-        if isinstance(value, dict):
-            return any(
-                key == "@context" or ValidationEngine._contains_nested_context(item)
-                for key, item in value.items()
-            )
-        if isinstance(value, list):
-            return any(
-                ValidationEngine._contains_nested_context(item) for item in value
-            )
+        stack = [value]
+        visited: set[int] = set()
+
+        while stack:
+            current = stack.pop()
+            if isinstance(current, dict):
+                if id(current) in visited:
+                    continue
+                visited.add(id(current))
+                for key, item in current.items():
+                    if key == "@context":
+                        return True
+                    stack.append(item)
+            elif isinstance(current, list):
+                if id(current) in visited:
+                    continue
+                visited.add(id(current))
+                stack.extend(current)
+
         return False
 
-    @staticmethod
-    def _validate_document(document: dict[str, Any]) -> CustomValidationResult:
-        """Parse and validate a document using cached resources."""
-        configure_network_timeout()
-        parsed_document = Document.from_text("document", json.dumps(document))
-        resources: ValidationResources = load_validation_resources()
+    def _validate_document(self, document: dict[str, Any]) -> CustomValidationResult:
+        """Parse and run the enabled validation stages using cached resources."""
         errors: list[CustomValidationError] = []
+        if not self.enable_schema_validation and not self.enable_semantic_validation:
+            return CustomValidationResult(errors=errors)
 
-        for error in resources.schema_validator.iter_errors(parsed_document.data):
-            message = (
-                error.message if isinstance(error.instance, str) else "Is not valid"
+        parsed_document = Document.from_text("document", json.dumps(document))
+        try:
+            resources: ValidationResources = load_validation_resources(
+                enable_schema_validation=self.enable_schema_validation,
+                enable_semantic_validation=self.enable_semantic_validation,
             )
-            errors.append(
-                CustomValidationError(
-                    parsed_document.source,
-                    "schema",
-                    f"{error.json_path}: {message}",
+        except requests.RequestException:
+            raise
+        except Exception as resource_error:
+            raise _ResourceLoadError from resource_error
+
+        if (
+            self.enable_schema_validation
+            and resources.schema_validator is not None
+        ):
+            for error in resources.schema_validator.iter_errors(parsed_document.data):
+                message = (
+                    error.message if isinstance(error.instance, str) else "Is not valid"
+                )
+                errors.append(
+                    CustomValidationError(
+                        parsed_document.source,
+                        "schema",
+                        f"{error.json_path}: {message}",
+                    )
+                )
+
+        if self.enable_semantic_validation and resources.shacl_graph is not None:
+            errors.extend(
+                CustomValidationError(parsed_document.source, "shacl", message)
+                for message in check_graph(
+                    parsed_document.graph,
+                    resources.shacl_graph,
+                    resources.version,
+                    True,
                 )
             )
-
-        errors.extend(
-            CustomValidationError(parsed_document.source, "shacl", message)
-            for message in check_graph(
-                parsed_document.graph, resources.shacl_graph, resources.version, True
-            )
-        )
         return CustomValidationResult(errors=errors)
 
-    @staticmethod
     def _process_validation_result(
-        result: CustomValidationResult,
+        self, result: CustomValidationResult
     ) -> ValidationResult:
         """Convert the upstream validation result to the public result model."""
         all_messages: list[ValidationMessage] = []
-        schema_valid = True
-        semantic_valid = True
+        schema_valid = True if self.enable_schema_validation else None
+        semantic_valid = True if self.enable_semantic_validation else None
 
         if result.valid:
             return ValidationResult(
@@ -162,6 +213,22 @@ class ValidationEngine(ValidatorEngine):
             semantic_valid=semantic_valid,
         )
 
+    @staticmethod
+    def _document_too_deeply_nested_result() -> ValidationResult:
+        """Create a structured validation failure result."""
+        return ValidationResult(
+            is_valid=False,
+            messages=[
+                ValidationMessage(
+                    severity=ValidationSeverity.ERROR,
+                    message="Document is too deeply nested to validate.",
+                    rule_id="document_too_deeply_nested",
+                )
+            ],
+            schema_valid=None,
+            semantic_valid=None,
+        )
+
     def _validate(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
         self, document: dict[str, Any]
     ) -> ValidationResult:
@@ -174,24 +241,22 @@ class ValidationEngine(ValidatorEngine):
         Returns:
             Validation result
         """
-        source_path: Path | None = None
         try:
             result = self._validate_document(document)
+        except RecursionError:
+            return self._document_too_deeply_nested_result()
         except UnknownVersionError as e:
             return ValidationResult(
                 is_valid=False,
                 messages=[
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
-                        message=(
-                            "Unsupported SPDX version: "
-                            f"{self._user_facing_error(e, source_path)}"
-                        ),
+                        message=f"Unsupported SPDX version: {e}",
                         rule_id="unsupported_spdx_version",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
         except SpdxValidateError as e:
             return ValidationResult(
@@ -199,28 +264,43 @@ class ValidationEngine(ValidatorEngine):
                 messages=[
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
-                        message=(
-                            "SPDX validation error: "
-                            f"{self._user_facing_error(e, source_path)}"
-                        ),
+                        message=f"SPDX validation error: {e}",
                         rule_id="spdx_validate_error",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
-        except FileNotFoundError:
+        except requests.RequestException as e:
+            request = getattr(e, "request", None)
+            response = getattr(e, "response", None)
+            if request is None and response is not None:
+                request = getattr(response, "request", None)
+
+            detail = type(e).__name__
+            if (status_code := getattr(response, "status_code", None)) is not None:
+                detail += f" ({status_code})"
+            if url := getattr(request, "url", None):
+                detail += f" for {url}"
+
             return ValidationResult(
                 is_valid=False,
                 messages=[
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
-                        message="SPDX validation resource not found.",
-                        rule_id="spdx3_validation_resource_not_found",
+                        message=(
+                            "SPDX validation could not be completed because a "
+                            f"required remote resource was unavailable: {detail}"
+                        ),
+                        rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+                        remediation=(
+                            "Make the required SPDX validation resources available "
+                            "and run validation again."
+                        ),
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
         except (
             HTTPException,
@@ -251,8 +331,8 @@ class ValidationEngine(ValidatorEngine):
             )
         except OSError:
             # Do not expose raw OS error text: it may contain a local path from
-            # the validation host. This is a defensive fallback for resource
-            # failures not represented by one of the more specific exceptions.
+            # the validation host. Non-requests resource-loading failures are
+            # wrapped as OSError so they are not blamed on the submitted SBOM.
             return ValidationResult(
                 is_valid=False,
                 messages=[
@@ -302,8 +382,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="json_parse_error",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
         except (AttributeError, TypeError, ValueError) as e:
             # rdflib's JSON-LD parser can raise ordinary Python exceptions for
@@ -319,8 +399,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="spdx3_validation_input_error",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         return self._process_validation_result(result)
@@ -346,11 +426,16 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="json_parse_error",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
+        except RecursionError:
+            return self._document_too_deeply_nested_result()
 
-        return self.validate_dict(spdx_data)
+        try:
+            return self.validate_dict(spdx_data)
+        except RecursionError:
+            return self._document_too_deeply_nested_result()
 
     def validate_dict(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
         self, document: dict[str, Any]
@@ -376,8 +461,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="unsupported_format",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         if "@context" not in document:
@@ -390,8 +475,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="spdx3_missing_context",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         context = document["@context"]
@@ -408,8 +493,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="unsupported_spdx3_context_form",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         if not isinstance(context, str):
@@ -422,8 +507,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="unsupported_spdx3_context_form",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         if context != SPDX_CONTEXT_URL:
@@ -439,8 +524,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="unsupported_spdx_version",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         if any(
@@ -456,11 +541,11 @@ class ValidationEngine(ValidatorEngine):
                             "Nested @context values are not supported; SPDX 3.0.1 "
                             "requires a single top-level context."
                         ),
-                        rule_id="spdx3_validation_input_error",
+                        rule_id="unsupported_spdx3_context_form",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
 
         return self._validate(document)
@@ -489,8 +574,8 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="file_not_found",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )
         except (OSError, UnicodeDecodeError) as e:
             return ValidationResult(
@@ -502,6 +587,6 @@ class ValidationEngine(ValidatorEngine):
                         rule_id="file_read_error",
                     )
                 ],
-                schema_valid=False,
-                semantic_valid=False,
+                schema_valid=None,
+                semantic_valid=None,
             )

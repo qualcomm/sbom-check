@@ -161,8 +161,8 @@ class TestSpdx3ValidationIntegration:
         result = ValidationEngine().validate_file(invalid_document)
 
         assert result.is_valid is False
-        assert result.schema_valid is False
-        assert result.semantic_valid is False
+        assert result.schema_valid is None
+        assert result.semantic_valid is None
         assert len(result.messages) == 1
         assert result.messages[0].rule_id == "json_parse_error"
         assert "Invalid JSON" in result.messages[0].message
@@ -175,8 +175,8 @@ class TestSpdx3ValidationIntegration:
         result = ValidationEngine().validate_file(document)
 
         assert result.is_valid is False
-        assert result.schema_valid is False
-        assert result.semantic_valid is False
+        assert result.schema_valid is None
+        assert result.semantic_valid is None
         assert len(result.messages) == 1
         assert result.messages[0].rule_id == "spdx3_missing_context"
         assert result.messages[0].message == (
