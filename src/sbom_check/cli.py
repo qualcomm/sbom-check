@@ -25,8 +25,20 @@ except ImportError:
     __version__ = "dev"
 
 from sbom_check.config.loader import ConfigLoader
+from sbom_check.detection import detect_document
 from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import ProfileStatus, ValidationSeverity
+from sbom_check.models import DocumentFormat, ProfileStatus, ValidationSeverity
+from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+from sbom_validator.network import configure_network_timeout
+
+REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
+
+# User-facing names for document format enum values.  SPDX3 is an internal
+# identifier; the CLI should use the standard SPDX name in its output.
+FORMAT_DISPLAY_NAMES = {
+    "SPDX": "SPDX",
+    "SPDX3": "SPDX",
+}
 
 if TYPE_CHECKING:
     from sbom_check.config.models import SbomCheckConfig
@@ -36,7 +48,7 @@ DEFAULT_SBOM_PATTERN = "*.{spdx,cdx}.json"
 
 
 MAX_PATTERN_EXPANSIONS = 1024
-_worker_state: dict[str, SbomCheckEngine] = {}
+_worker_state: dict[str, Any] = {}
 
 
 def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
@@ -50,7 +62,9 @@ def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
 
 
 def _initialize_worker(sbom_config: SbomCheckConfig) -> None:
-    """Create the reusable validation engine for one worker process."""
+    """Configure network access and reset the worker's per-batch state."""
+    configure_network_timeout()
+    _worker_state["remote_resource_failure"] = None
     _worker_state["engine"] = SbomCheckEngine(sbom_config)
 
 
@@ -146,12 +160,51 @@ def validate_single_file(
     profile: str,
     config_path: str | None,
 ) -> tuple[Path, Any]:
-    """Validate a single SBOM file. Used for parallel processing."""
+    """Validate a file, skipping remote checks after this worker's first outage."""
+    if (
+        failure := _worker_state.get("remote_resource_failure")
+    ) is not None and _is_spdx3_0_1_file(file_path):
+        return file_path, failure
+
     if (engine := _worker_state.get("engine")) is None:
         _initialize_worker(_load_config(profile, config_path))
         engine = _worker_state["engine"]
     result = engine.validate_file(file_path)
+    if _is_spdx3_0_1_remote_failure(result):
+        _worker_state["remote_resource_failure"] = result
     return file_path, result
+
+
+def _is_spdx3_0_1_remote_failure(result: Any) -> bool:
+    """Return whether an SPDX 3.0.1 result reports an unavailable resource."""
+    document_format = getattr(result, "document_format", None)
+    document_format = getattr(document_format, "value", document_format)
+    return (
+        document_format == DocumentFormat.SPDX3.value
+        and getattr(result, "spec_version", None) == "3.0.1"
+        and _has_remote_resource_failure(result)
+    )
+
+
+def _is_spdx3_0_1_file(file_path: Path) -> bool:
+    """Check the declared format before reusing an SPDX 3.0.1 failure result."""
+    try:
+        with file_path.open(encoding="utf-8") as file:
+            document = json.load(file)
+        detected = detect_document(document)
+    except Exception:  # pylint: disable=broad-exception-caught
+        # This is only a fast-path check; let normal validation report failures.
+        return False
+
+    return detected.format is DocumentFormat.SPDX3 and detected.spec_version == "3.0.1"
+
+
+def _has_remote_resource_failure(result: Any) -> bool:
+    """Return whether validation could not run because a remote resource failed."""
+    return any(
+        getattr(message, "rule_id", None) == REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+        for message in getattr(result, "messages", [])
+    )
 
 
 def output_text_multiple(results: list[tuple[Path, Any]]) -> None:
@@ -204,8 +257,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
                 "overall_valid": result.overall_valid,
                 "document_format": result.document_format,
                 "spec_version": result.spec_version,
-                "core_valid": _result_core_valid(result),
-                "profile_status": _result_profile_status(result).value,
+                "core_valid": result.core_valid,
+                "profile_status": result.profile_status.value,
                 "spdx_valid": result.spdx_valid,
                 "profile_valid": result.profile_valid,
                 "profile_name": result.profile_name,
@@ -223,6 +276,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
                         "message": msg.message,
                         "rule_id": msg.rule_id,
                         "field_path": msg.field_path,
+                        "json_path": msg.json_path,
+                        "affected_element": msg.affected_element,
                         "section_reference": msg.section_reference,
                         "found_value": msg.found_value,
                         "expected_value": msg.expected_value,
@@ -275,7 +330,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
 @click.option(
     "--jobs",
     "-j",
-    type=int,
+    type=click.IntRange(min=1),
     default=None,
     help="Number of parallel jobs for validation (default: number of CPU cores)",
 )
@@ -346,20 +401,19 @@ def main(  # noqa: PLR0917,RUF100
         # Validate all files (in parallel if multiple files)
         results = []
         overall_valid = True
+        remote_resource_failure = False
 
         if len(files_to_validate) == 1:
             # Single file - no need for parallel processing
             file_path = files_to_validate[0]
-
             sbom_config = _load_config(profile, config)
-
-            # Detection and validator selection are owned by SbomCheckEngine.
-            engine = SbomCheckEngine(sbom_config)
-            result = engine.validate_file(file_path)
+            _initialize_worker(sbom_config)
+            _, result = validate_single_file(file_path, profile, config)
             results.append((file_path, result))
 
             if not result.overall_valid:
                 overall_valid = False
+            remote_resource_failure = _has_remote_resource_failure(result)
         else:
             # Multiple files - use parallel processing
             sbom_config = _load_config(profile, config)
@@ -385,6 +439,8 @@ def main(  # noqa: PLR0917,RUF100
                     results.append((file_path, result))
                     if not result.overall_valid:
                         overall_valid = False
+                    if _has_remote_resource_failure(result):
+                        remote_resource_failure = True
 
             # Sort results by file path for consistent output
             results.sort(key=lambda x: x[0])
@@ -403,7 +459,10 @@ def main(  # noqa: PLR0917,RUF100
         elif output_format == "json":
             output_json_multiple(results)
 
-        # Exit with appropriate code
+        # A remote-resource failure means validation was incomplete. Give it a
+        # distinct status, including when a batch also contains invalid documents.
+        if remote_resource_failure:
+            sys.exit(REMOTE_RESOURCE_FAILURE_EXIT_CODE)
         sys.exit(0 if overall_valid else 1)
 
     except Exception as e:
@@ -500,12 +559,14 @@ def _print_text_result(result: Any, file_path: str) -> None:
 
     format_name = getattr(result, "document_format", "SPDX")
     format_name = getattr(format_name, "value", format_name)
+    format_name = FORMAT_DISPLAY_NAMES.get(format_name, format_name)
     specification = f" {result.spec_version}" if result.spec_version else ""
     core_label = (
         "Core Validation"
         if format_name == "unknown"
         else f"{format_name}{specification} Validation"
     )
+
     if _result_core_valid(result):
         console.print(f"[green]✅ {core_label}: PASSED[/green]")
     else:
@@ -556,6 +617,12 @@ def _print_message(msg: Any, color: str) -> None:
     if msg.field_path:
         console.print(f"    Field: {msg.field_path}")
 
+    if msg.json_path:
+        console.print(f"    JSON path: {msg.json_path}")
+
+    if msg.affected_element:
+        console.print(f"    Affected element: {msg.affected_element}")
+
     if msg.found_value is not None:
         console.print(f"    Found: {msg.found_value}")
 
@@ -596,6 +663,8 @@ def _print_json_result(result: Any) -> None:
                 "message": msg.message,
                 "rule_id": msg.rule_id,
                 "field_path": msg.field_path,
+                "json_path": msg.json_path,
+                "affected_element": msg.affected_element,
                 "section_reference": msg.section_reference,
                 "found_value": msg.found_value,
                 "expected_value": msg.expected_value,

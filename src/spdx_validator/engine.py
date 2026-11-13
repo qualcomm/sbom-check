@@ -107,6 +107,8 @@ class ValidationEngine(ValidatorEngine):
                 schema_valid=False,
                 semantic_valid=False,
             )
+        except RecursionError:
+            return self._document_too_deeply_nested_result()
 
         return self.validate_dict(spdx_data)
 
@@ -217,7 +219,35 @@ class ValidationEngine(ValidatorEngine):
 
         return re.sub(pattern, replace_package_reference, error_message)
 
+    @staticmethod
+    def _document_too_deeply_nested_result() -> ValidationResult:
+        """Create a structured validation failure result."""
+        return ValidationResult(
+            is_valid=False,
+            messages=[
+                ValidationMessage(
+                    severity=ValidationSeverity.ERROR,
+                    message="Document is too deeply nested to validate.",
+                    rule_id="document_too_deeply_nested",
+                )
+            ],
+            schema_valid=False,
+            semantic_valid=False,
+        )
+
     def validate_dict(
+        self,
+        document: dict[str, Any] | None = None,
+        *,
+        spdx_data: dict[str, Any] | None = None,
+    ) -> ValidationResult:
+        """Validate SPDX document from dictionary."""
+        try:
+            return self._validate_dict(document, spdx_data=spdx_data)
+        except RecursionError:
+            return self._document_too_deeply_nested_result()
+
+    def _validate_dict(
         self,
         document: dict[str, Any] | None = None,
         *,

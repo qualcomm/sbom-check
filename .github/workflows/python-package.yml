@@ -25,3 +25,5 @@ jobs:
       run: uv python install 3.10 3.11 3.12 3.13 3.14
     - name: Run Tox
       run: tox
+    - name: Run integration tests
+      run: tox -e test-integration

@@ -6,10 +6,23 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
+
+
+class ValidationResultProtocol(Protocol):
+    """Common result interface exposed by format-specific validators."""
+
+    @property
+    def is_valid(self) -> bool:
+        """Whether the validated document is valid."""
+
+    @property
+    def messages(self) -> Sequence[Any]:
+        """Validation messages produced for the document."""
 
 
 class ValidatorEngine(ABC):
@@ -30,7 +43,9 @@ class ValidatorEngine(ABC):
         """Initialize the validator with validation settings."""
 
     @abstractmethod
-    def validate(self, document: dict[str, Any], spec_version: str) -> Any:
+    def validate(
+        self, document: dict[str, Any], spec_version: str
+    ) -> ValidationResultProtocol:
         """Validate a parsed SBOM document against its declared schema.
 
         Args:
@@ -40,16 +55,16 @@ class ValidatorEngine(ABC):
         """
 
     @abstractmethod
-    def validate_json_string(self, json_string: str) -> Any:
+    def validate_json_string(self, json_string: str) -> ValidationResultProtocol:
         """Validate an SBOM document represented as a JSON string."""
 
     @abstractmethod
-    def validate_dict(self, document: dict[str, Any]) -> Any:
+    def validate_dict(self, document: dict[str, Any]) -> ValidationResultProtocol:
         """Validate an SBOM document represented as a dictionary."""
 
     @abstractmethod
-    def validate_file(self, file_path: str | Path) -> Any:
+    def validate_file(self, file_path: str | Path) -> ValidationResultProtocol:
         """Validate an SBOM document loaded from a file."""
 
 
-__all__ = ["ValidatorEngine"]
+__all__ = ["ValidationResultProtocol", "ValidatorEngine"]

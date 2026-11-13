@@ -11,7 +11,10 @@ from typing import TYPE_CHECKING, Any
 from warnings import warn
 
 from sbom_check.config.loader import ConfigLoader
-from sbom_check.detection import UnsupportedDocumentError, detect_document
+from sbom_check.detection import (
+    UnsupportedDocumentError,
+    detect_document,
+)
 from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
@@ -142,10 +145,29 @@ class SbomCheckEngine:
                 rule_id="json_parse_error",
                 file_path=file_path,
             )
+        except RecursionError:
+            return self._early_failure_result(
+                "Document is too deeply nested to validate.",
+                rule_id="document_too_deeply_nested",
+                file_path=file_path,
+            )
 
         return self.validate_dict(sbom_data, file_path)
 
     def validate_dict(
+        self, sbom_data: object, file_path: str | None = None
+    ) -> SbomCheckResult:
+        """Validate an SBOM document from dictionary."""
+        try:
+            return self._validate_dict(sbom_data, file_path)
+        except RecursionError:
+            return self._early_failure_result(
+                "Document is too deeply nested to validate.",
+                rule_id="document_too_deeply_nested",
+                file_path=file_path,
+            )
+
+    def _validate_dict(
         self, sbom_data: object, file_path: str | None = None
     ) -> SbomCheckResult:
         """Validate an SBOM document from dictionary.
@@ -250,7 +272,11 @@ class SbomCheckEngine:
             overall_valid=True,
             spdx_valid=True,  # This will be overridden in combine()
             profile_valid=True,
+            core_valid=True,
+            profile_status=ProfileStatus.PASSED,
             profile_name=self.config.metadata.name,
+            document_format=DocumentFormat.SPDX,
+            spec_version="2.3",
         )
 
         # Validate document requirements

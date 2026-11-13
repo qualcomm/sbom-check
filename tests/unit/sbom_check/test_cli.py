@@ -5,6 +5,8 @@
 
 import json
 import re
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,31 @@ from sbom_check.cli import (
     collect_sbom_files,
     main,
 )
+from sbom_check.models import (
+    DocumentFormat,
+    ProfileStatus,
+    SbomCheckResult,
+    ValidationMessage,
+    ValidationSeverity,
+)
+
+
+def test_importing_cli_does_not_import_spdx3_dependencies() -> None:
+    """Keep SPDX 3 dependencies out of the generic CLI startup path."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import sbom_check.cli; "
+            "assert 'pyshacl' not in sys.modules; "
+            "assert 'spdx3_validator.engine' not in sys.modules",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _mock_spdx_result() -> Mock:
@@ -36,14 +63,18 @@ def test_worker_reuses_its_configured_engine() -> None:
     sbom_cli._worker_state.clear()
     try:
         config = Mock()
-        with patch("sbom_check.cli.SbomCheckEngine") as engine_class:
+        with (
+            patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+            patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+        ):
             engine = engine_class.return_value
-            engine.validate_file.return_value = Mock()
+            engine.validate_file.return_value = Mock(messages=[])
 
             sbom_cli._initialize_worker(config)
             sbom_cli.validate_single_file(Path("first.spdx.json"), "default", None)
             sbom_cli.validate_single_file(Path("second.spdx.json"), "default", None)
 
+        configure_timeout.assert_called_once_with()
         engine_class.assert_called_once_with(config)
         assert engine.validate_file.call_count == 2
     finally:
@@ -289,6 +320,179 @@ def test_cli_validate_file_not_found():
     )  # Click returns 2 for invalid arguments (file not found)
 
 
+def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
+    """Use a distinct exit code when SPDX 3 resources are unavailable."""
+    runner = CliRunner()
+    document = tmp_path / "document.spdx.json"
+    document.write_text("{}")
+    result = SbomCheckResult(
+        overall_valid=False,
+        spdx_valid=None,
+        profile_valid=None,
+        core_valid=False,
+        messages=[
+            ValidationMessage(
+                severity=ValidationSeverity.ERROR,
+                message="remote resource unavailable",
+                rule_id="remote_resource_unavailable",
+            )
+        ],
+    )
+
+    with (
+        patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+        patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+    ):
+        engine_class.return_value.validate_file.return_value = result
+        cli_result = runner.invoke(main, [str(document)])
+
+    configure_timeout.assert_called_once_with()
+    assert cli_result.exit_code == 4
+
+
+def test_worker_caches_spdx3_failure_only_for_spdx3_and_resets_between_batches(
+    tmp_path,
+):
+    """Reuse SPDX 3.0.1 outages without skipping other formats or future batches."""
+    spdx3_context = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+    (tmp_path / "first.spdx.json").write_text(
+        json.dumps({"@context": spdx3_context}), encoding="utf-8"
+    )
+    (tmp_path / "second.spdx.json").write_text(
+        json.dumps({"spdxVersion": "SPDX-2.3"}), encoding="utf-8"
+    )
+    (tmp_path / "third.spdx.json").write_text(
+        json.dumps({"@context": spdx3_context}), encoding="utf-8"
+    )
+
+    failure_result = SbomCheckResult(
+        overall_valid=False,
+        spdx_valid=None,
+        profile_valid=None,
+        core_valid=False,
+        document_format=DocumentFormat.SPDX3,
+        spec_version="3.0.1",
+        messages=[
+            ValidationMessage(
+                severity=ValidationSeverity.ERROR,
+                message="remote resource unavailable",
+                rule_id="remote_resource_unavailable",
+            )
+        ],
+    )
+    spdx2_result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+        core_valid=True,
+        document_format=DocumentFormat.SPDX,
+        spec_version="2.3",
+    )
+
+    with (
+        patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor),
+        patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+        patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+    ):
+        engine_class.return_value.validate_file.side_effect = [
+            failure_result,
+            spdx2_result,
+            failure_result,
+            spdx2_result,
+        ]
+        first_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+        second_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+
+    assert first_batch.exit_code == 4
+    assert second_batch.exit_code == 4
+    assert first_batch.output.count("remote resource unavailable") == 2
+    assert second_batch.output.count("remote resource unavailable") == 2
+    assert engine_class.return_value.validate_file.call_count == 4
+    assert configure_timeout.call_count == 2
+
+
+@patch("spdx3_validator.engine.ValidationEngine._validate_document")
+def test_cli_nested_context_is_input_failure(mock_validate, tmp_path):
+    """Treat a nested unreachable context as invalid input, not infrastructure."""
+    document = tmp_path / "nested-context.spdx.json"
+    document.write_text(
+        json.dumps(
+            {
+                "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+                "@graph": [
+                    {
+                        "@context": "http://127.0.0.1:1/ctx.jsonld",
+                        "type": "Person",
+                        "spdxId": "x:y",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, [str(document), "--output-format", "json"])
+
+    assert result.exit_code == 1
+    assert '"rule_id": "unsupported_spdx3_context_form"' in result.output
+    assert '"rule_id": "remote_resource_unavailable"' not in result.output
+    mock_validate.assert_not_called()
+
+
+@patch("sbom_check.cli.SbomCheckEngine")
+def test_cli_uses_spdx_display_name_for_spdx3(mock_engine_class, tmp_path):
+    """Use the standard SPDX name instead of the internal SPDX3 enum value."""
+    mock_result = Mock()
+    mock_result.profile_name = None
+    mock_result.overall_valid = True
+    mock_result.core_valid = True
+    mock_result.profile_status = ProfileStatus.NOT_APPLICABLE
+    mock_result.document_format = "SPDX3"
+    mock_result.spec_version = "3.0.1"
+    mock_result.messages = []
+
+    mock_engine_class.return_value.validate_file.return_value = mock_result
+
+    test_file = tmp_path / "test.json"
+    test_file.write_text("{}")
+
+    result = CliRunner().invoke(main, [str(test_file)])
+
+    assert result.exit_code == 0
+    assert "SPDX 3.0.1 Validation: PASSED" in result.output
+
+
+def test_cli_rejects_unsupported_spdx_version(tmp_path):
+    """Report unsupported SPDX versions as structured validation errors."""
+    document_path = tmp_path / "unsupported.spdx.json"
+    document_path.write_text(json.dumps({"spdxVersion": "SPDX-2.2"}), encoding="utf-8")
+
+    result = CliRunner().invoke(main, [str(document_path), "--output-format", "json"])
+
+    assert result.exit_code == 1
+    assert "Unsupported SPDX version" in result.output
+    assert '"rule_id": "unsupported_spdx_version"' in result.output
+    assert '"document_format": "unknown"' in result.output
+    assert '"profile_status": "not_applicable"' in result.output
+
+
+def test_cli_rejects_unsupported_spdx3_version(tmp_path):
+    """Report unsupported SPDX 3 versions as structured validation errors."""
+    document_path = tmp_path / "unsupported-spdx3.json"
+    document_path.write_text(
+        json.dumps({"@context": "https://spdx.org/rdf/3.0.0/spdx-context.jsonld"}),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(main, [str(document_path), "--output-format", "json"])
+
+    assert result.exit_code == 1
+    assert "Unsupported SPDX version" in result.output
+    assert '"rule_id": "unsupported_spdx_version"' in result.output
+    assert '"document_format": "unknown"' in result.output
+    assert '"profile_status": "not_applicable"' in result.output
+
+
 @patch("sbom_check.cli.SbomCheckEngine")
 def test_cli_validate_valid_file(mock_engine_class, tmp_path):
     """Test CLI with valid SPDX file."""
@@ -344,6 +548,10 @@ def test_cli_validate_with_json_output(mock_engine_class, tmp_path):
     mock_result.overall_valid = True
     mock_result.spdx_valid = True
     mock_result.profile_valid = True
+    mock_result.core_valid = True
+    mock_result.profile_status = ProfileStatus.PASSED
+    mock_result.document_format = "SPDX"
+    mock_result.spec_version = "2.3"
     mock_result.profile_name = "Test Profile"
     mock_result.file_path = "test.json"
     mock_result.messages = []
@@ -862,6 +1070,10 @@ def test_cli_multiple_files_json_output(tmp_path):
         mock_result.overall_valid = True
         mock_result.spdx_valid = True
         mock_result.profile_valid = True
+        mock_result.core_valid = True
+        mock_result.profile_status = ProfileStatus.PASSED
+        mock_result.document_format = "SPDX"
+        mock_result.spec_version = "2.3"
         mock_result.profile_name = "Test Profile"
         mock_result.messages = []
         mock_result.summary.errors = 0
