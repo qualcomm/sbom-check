@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import socket
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -15,9 +14,10 @@ import requests
 from spdx3_validate.core import SpdxValidateError, schema_validator
 from spdx3_validate.spdx_versions import SpdxVersion, find_version
 
+from sbom_validator.network import VALIDATION_RESOURCE_TIMEOUT_SECONDS
+
 SPDX_VERSION = "3.0.1"
 SPDX_CONTEXT_URL = f"https://spdx.org/rdf/{SPDX_VERSION}/spdx-context.jsonld"
-VALIDATION_RESOURCE_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)
@@ -27,16 +27,6 @@ class ValidationResources:
     schema_validator: jsonschema.protocols.Validator | None
     shacl_graph: rdflib.Graph | None
     version: SpdxVersion
-
-
-def configure_network_timeout() -> None:
-    """Set the process socket timeout for CLI context resolution.
-
-    This changes process-global state and should be called once during CLI or
-    worker initialization, not for each library validation.
-    """
-    if socket.getdefaulttimeout() is None:
-        socket.setdefaulttimeout(VALIDATION_RESOURCE_TIMEOUT_SECONDS)
 
 
 @lru_cache(maxsize=1)

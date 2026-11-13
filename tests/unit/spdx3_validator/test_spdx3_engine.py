@@ -23,6 +23,7 @@ from spdx3_validate.core import (
 from spdx3_validator.engine import ValidationEngine
 from spdx3_validator.models import ValidationResult
 from spdx3_validator.resources import (
+    SPDX_CONTEXT_URL,
     _get_spdx_version,
     _load_schema_validator,
     _load_shacl_graph,
@@ -75,6 +76,38 @@ class TestValidationEngine:
         assert result.messages[0].rule_id == "document_too_deeply_nested"
         assert "too deeply nested" in result.messages[0].message
 
+    def test_deep_jsonld_recursion_returns_structured_error(self):
+        """Use rdflib's real JSON-LD parser with a locally supplied context."""
+        nested_value = '"leaf"'
+        for _ in range(500):
+            nested_value = '{"name":' + nested_value + "}"
+
+        json_string = (
+            f'{{"@context":"{SPDX_CONTEXT_URL}",'
+            '"@graph":[{"type":"SpdxDocument","name":'
+            f"{nested_value}" + "}] }"
+        )
+        local_context = {
+            "@context": {
+                "name": "https://spdx.org/rdf/3.0.1/terms/name",
+                "type": "@type",
+                "SpdxDocument": "https://spdx.org/rdf/3.0.1/terms/SpdxDocument",
+            }
+        }
+
+        with patch(
+            "rdflib.plugins.shared.jsonld.context.source_to_json",
+            return_value=(local_context, None),
+        ) as load_context:
+            result = ValidationEngine().validate_json_string(json_string)
+
+        load_context.assert_called_once_with(SPDX_CONTEXT_URL)
+        assert result.is_valid is False
+        assert result.schema_valid is None
+        assert result.semantic_valid is None
+        assert result.messages[0].rule_id == "document_too_deeply_nested"
+        assert "too deeply nested" in result.messages[0].message
+
     @pytest.mark.parametrize("spec_version", ["3.0.1", "SPDX-3.0.1"])
     def test_validate_matching_version_delegates_to_validate_dict(
         self, spec_version: str
@@ -100,6 +133,10 @@ class TestValidationEngine:
         assert result.schema_valid is None
         assert result.semantic_valid is None
         assert result.messages[0].rule_id == "spec_version_mismatch"
+        assert result.messages[0].message == (
+            "Requested SPDX version 3.0.0 is not supported by the SPDX 3 engine "
+            "(supported: 3.0.1)"
+        )
         validate.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -114,15 +151,22 @@ class TestValidationEngine:
             enable_schema_validation=schema_enabled,
             enable_semantic_validation=semantic_enabled,
         )
+        document = {
+            "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            "@graph": [],
+        }
         parsed_document = MagicMock()
-        parsed_document.data = {}
+        parsed_document.data = document
         parsed_document.graph = MagicMock()
         parsed_document.source = "document"
         resources = MagicMock()
         resources.schema_validator.iter_errors.return_value = []
 
         with (
-            patch("spdx3_validator.resources.socket.setdefaulttimeout") as set_timeout,
+            patch("sbom_validator.network.socket.setdefaulttimeout") as set_timeout,
+            patch(
+                "spdx3_validator.engine.find_version", return_value=object()
+            ) as resolve_version,
             patch(
                 "spdx3_validator.engine.Document.from_text",
                 return_value=parsed_document,
@@ -133,7 +177,7 @@ class TestValidationEngine:
             ) as load_resources,
             patch("spdx3_validator.engine.check_graph", return_value=[]) as check_graph,
         ):
-            result = engine._validate_document({})
+            result = engine._validate_document(document)
 
         assert result.valid is True
         processed_result = engine._process_validation_result(result)
@@ -141,22 +185,45 @@ class TestValidationEngine:
         assert processed_result.semantic_valid is (True if semantic_enabled else None)
         set_timeout.assert_not_called()
         if schema_enabled:
-            resources.schema_validator.iter_errors.assert_called_once_with({})
+            resources.schema_validator.iter_errors.assert_called_once_with(document)
         else:
             resources.schema_validator.iter_errors.assert_not_called()
         if semantic_enabled:
             check_graph.assert_called_once()
         else:
             check_graph.assert_not_called()
-        if schema_enabled or semantic_enabled:
+        if schema_enabled and not semantic_enabled:
+            resolve_version.assert_called_once_with(document["@context"])
+        else:
+            resolve_version.assert_not_called()
+        if semantic_enabled:
             parse_document.assert_called_once()
+        else:
+            parse_document.assert_not_called()
+        if schema_enabled or semantic_enabled:
             load_resources.assert_called_once_with(
                 enable_schema_validation=schema_enabled,
                 enable_semantic_validation=semantic_enabled,
             )
         else:
-            parse_document.assert_not_called()
             load_resources.assert_not_called()
+
+    def test_schema_only_validation_rejects_unknown_context_without_parsing(self):
+        """Reject an unknown context before loading schema resources or RDF."""
+        engine = ValidationEngine(enable_semantic_validation=False)
+        document = {"@context": "https://example.com/unknown-context.jsonld"}
+
+        with (
+            patch("spdx3_validator.engine.find_version", return_value=None) as resolve,
+            patch("spdx3_validator.engine.Document.from_text") as parse_document,
+            patch("spdx3_validator.engine.load_validation_resources") as load_resources,
+            pytest.raises(UnknownVersionError, match="unknown version @context"),
+        ):
+            engine._validate_document(document)
+
+        resolve.assert_called_once_with(document["@context"])
+        parse_document.assert_not_called()
+        load_resources.assert_not_called()
 
     @patch("spdx3_validator.engine.ValidationEngine._validate_document")
     def test_validate_dict_success(self, mock_validate: Mock):
@@ -224,8 +291,57 @@ class TestValidationEngine:
         assert result.schema_valid is None
         assert result.semantic_valid is None
         assert result.messages[0].rule_id == "remote_resource_unavailable"
+        assert "UnicodeDecodeError" in result.messages[0].message
         assert "Invalid SPDX 3 validation input" not in result.messages[0].message
         assert get_resources.call_count == 2
+
+    def test_non_requests_resource_failure_preserves_cause_details(self):
+        """Keep schema diagnostics when non-requests resource loading fails."""
+        cause = SpdxValidateError(
+            "Invalid schema https://spdx.org/schema/3.0.1/spdx-json-schema.json: "
+            "unexpected schema type"
+        )
+        with (
+            patch(
+                "spdx3_validator.engine.Document.from_text",
+                return_value=MagicMock(),
+            ),
+            patch(
+                "spdx3_validator.engine.load_validation_resources",
+                side_effect=cause,
+            ),
+        ):
+            result = ValidationEngine().validate_dict(
+                {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+            )
+
+        message = result.messages[0].message
+        assert result.is_valid is False
+        assert result.schema_valid is None
+        assert result.semantic_valid is None
+        assert result.messages[0].rule_id == "spdx_validate_error"
+        assert message == f"SPDX validation error: {cause}"
+
+    def test_unknown_spdx_version_resource_failure_preserves_cause_details(self):
+        """Retain the diagnostic raised by the real cached version lookup."""
+        _clear_resource_caches()
+        try:
+            with (
+                patch(
+                    "spdx3_validator.engine.Document.from_text",
+                    return_value=MagicMock(),
+                ),
+                patch("spdx3_validator.resources.find_version", return_value=None),
+            ):
+                result = ValidationEngine().validate_dict(
+                    {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+                )
+        finally:
+            _clear_resource_caches()
+
+        message = result.messages[0].message
+        assert result.messages[0].rule_id == "spdx_validate_error"
+        assert message == "SPDX validation error: Unknown SPDX version 3.0.1"
 
     @pytest.mark.parametrize(
         ("exception_type", "status_code"),

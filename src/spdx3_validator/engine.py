@@ -21,6 +21,7 @@ from spdx3_validate.core import (
 )
 from spdx3_validate.core import ValidationError as CustomValidationError
 from spdx3_validate.core import ValidationResult as CustomValidationResult
+from spdx3_validate.spdx_versions import find_version
 
 from sbom_validator.engine import ValidatorEngine
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
@@ -38,7 +39,7 @@ from spdx3_validator.resources import (
 )
 
 
-class _ResourceLoadError(OSError):
+class _ResourceLoadError(Exception):
     """Represent non-requests failures while loading validation resources."""
 
 
@@ -66,8 +67,8 @@ class ValidationEngine(ValidatorEngine):
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
                         message=(
-                            "Document SPDX version does not match the requested "
-                            f"version {version}"
+                            f"Requested SPDX version {version} is not supported by "
+                            f"the SPDX 3 engine (supported: {SPDX_VERSION})"
                         ),
                         rule_id="spec_version_mismatch",
                     )
@@ -123,33 +124,46 @@ class ValidationEngine(ValidatorEngine):
         return False
 
     def _validate_document(self, document: dict[str, Any]) -> CustomValidationResult:
-        """Parse and run the enabled validation stages using cached resources."""
+        """Run enabled stages, building the RDF graph only for semantic checks."""
         errors: list[CustomValidationError] = []
         if not self.enable_schema_validation and not self.enable_semantic_validation:
             return CustomValidationResult(errors=errors)
 
-        parsed_document = Document.from_text("document", json.dumps(document))
+        if self.enable_semantic_validation:
+            parsed_document = Document.from_text("document", json.dumps(document))
+            validation_data = parsed_document.data
+            source = parsed_document.source
+        else:
+            if "@context" not in document:
+                raise SpdxValidateError("No @context found in document")
+            if find_version(document["@context"]) is None:
+                raise UnknownVersionError(
+                    f"document has unknown version @context {document['@context']}"
+                )
+            validation_data = document
+            source = "document"
+
         try:
             resources: ValidationResources = load_validation_resources(
                 enable_schema_validation=self.enable_schema_validation,
                 enable_semantic_validation=self.enable_semantic_validation,
             )
         except requests.RequestException:
+            # Preserve requests details for the richer diagnostics in _validate.
+            raise
+        except SpdxValidateError:
             raise
         except Exception as resource_error:
             raise _ResourceLoadError from resource_error
 
-        if (
-            self.enable_schema_validation
-            and resources.schema_validator is not None
-        ):
-            for error in resources.schema_validator.iter_errors(parsed_document.data):
+        if self.enable_schema_validation and resources.schema_validator is not None:
+            for error in resources.schema_validator.iter_errors(validation_data):
                 message = (
                     error.message if isinstance(error.instance, str) else "Is not valid"
                 )
                 errors.append(
                     CustomValidationError(
-                        parsed_document.source,
+                        source,
                         "schema",
                         f"{error.json_path}: {message}",
                     )
@@ -229,7 +243,7 @@ class ValidationEngine(ValidatorEngine):
             semantic_valid=None,
         )
 
-    def _validate(  # pylint: disable=too-many-return-statements  # noqa: PLR0911
+    def _validate(  # pylint: disable=too-many-return-statements,too-many-branches  # noqa: PLR0911
         self, document: dict[str, Any]
     ) -> ValidationResult:
         """
@@ -266,6 +280,29 @@ class ValidationEngine(ValidatorEngine):
                         severity=ValidationSeverity.ERROR,
                         message=f"SPDX validation error: {e}",
                         rule_id="spdx_validate_error",
+                    )
+                ],
+                schema_valid=None,
+                semantic_valid=None,
+            )
+        except _ResourceLoadError as e:
+            cause = e.__cause__
+            detail = type(cause).__name__ if cause is not None else type(e).__name__
+            return ValidationResult(
+                is_valid=False,
+                messages=[
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            "SPDX validation could not be completed because a "
+                            "required remote resource was unavailable: "
+                            f"{detail}"
+                        ),
+                        rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+                        remediation=(
+                            "Make the required SPDX validation resources available "
+                            "and run validation again."
+                        ),
                     )
                 ],
                 schema_valid=None,
@@ -331,8 +368,7 @@ class ValidationEngine(ValidatorEngine):
             )
         except OSError:
             # Do not expose raw OS error text: it may contain a local path from
-            # the validation host. Non-requests resource-loading failures are
-            # wrapped as OSError so they are not blamed on the submitted SBOM.
+            # the validation host.
             return ValidationResult(
                 is_valid=False,
                 messages=[

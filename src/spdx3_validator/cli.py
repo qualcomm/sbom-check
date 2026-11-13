@@ -13,9 +13,9 @@ import click
 
 from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+from sbom_validator.network import configure_network_timeout
 from spdx3_validator.engine import ValidationEngine
 from spdx3_validator.models import ValidationResult, ValidationSeverity
-from spdx3_validator.resources import configure_network_timeout
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 

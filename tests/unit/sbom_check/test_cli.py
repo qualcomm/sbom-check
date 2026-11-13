@@ -5,6 +5,8 @@
 
 import json
 import re
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,24 @@ from sbom_check.models import (
     ValidationMessage,
     ValidationSeverity,
 )
+
+
+def test_importing_cli_does_not_import_spdx3_dependencies() -> None:
+    """Keep SPDX 3 dependencies out of the generic CLI startup path."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import sbom_check.cli; "
+            "assert 'pyshacl' not in sys.modules; "
+            "assert 'spdx3_validator.engine' not in sys.modules",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _mock_spdx_result() -> Mock:

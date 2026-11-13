@@ -28,7 +28,7 @@ from sbom_check.config.loader import ConfigLoader
 from sbom_check.engine import SbomCheckEngine
 from sbom_check.models import ProfileStatus, ValidationSeverity
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
-from spdx3_validator.resources import configure_network_timeout
+from sbom_validator.network import configure_network_timeout
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 

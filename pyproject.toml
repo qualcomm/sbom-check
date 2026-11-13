@@ -38,6 +38,7 @@ dependencies = [
     "cyclonedx-python-lib[json-validation]>=11.12,<12",
     # spdx3-validator dependencies
     "spdx3-validate==0.0.7",
+    "rdflib>=7.6.0",
 ]
 
 [project.scripts]

@@ -137,6 +137,8 @@ class TestValidationEngine:
 
     def test_validate_json_string_too_deep_returns_structured_error(self) -> None:
         """Return a result instead of propagating RecursionError from validation."""
+        # Keep this real deep input: on newer Python versions JSON parsing succeeds,
+        # and deepcopy in validate_dict is what raises RecursionError.
         nested = "[" * 3000 + "0" + "]" * 3000
         json_string = (
             '{"SPDXID":"SPDXRef-DOCUMENT","spdxVersion":"SPDX-2.3",'

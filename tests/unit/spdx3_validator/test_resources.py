@@ -8,12 +8,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from spdx3_validator.resources import (
+from sbom_validator.network import (
     VALIDATION_RESOURCE_TIMEOUT_SECONDS,
+    configure_network_timeout,
+)
+from spdx3_validator.resources import (
     _get_spdx_version,
     _load_schema_validator,
     _load_shacl_graph,
-    configure_network_timeout,
     load_validation_resources,
 )
 
@@ -46,8 +48,8 @@ class _Response:
 def test_configure_network_timeout_sets_default_only_when_unset():
     """Set the CLI socket timeout without replacing a caller's existing default."""
     with (
-        patch("spdx3_validator.resources.socket.getdefaulttimeout", return_value=None),
-        patch("spdx3_validator.resources.socket.setdefaulttimeout") as set_timeout,
+        patch("sbom_validator.network.socket.getdefaulttimeout", return_value=None),
+        patch("sbom_validator.network.socket.setdefaulttimeout") as set_timeout,
     ):
         configure_network_timeout()
 
@@ -57,8 +59,8 @@ def test_configure_network_timeout_sets_default_only_when_unset():
 def test_configure_network_timeout_preserves_existing_default():
     """Keep an existing process socket timeout unchanged."""
     with (
-        patch("spdx3_validator.resources.socket.getdefaulttimeout", return_value=5.0),
-        patch("spdx3_validator.resources.socket.setdefaulttimeout") as set_timeout,
+        patch("sbom_validator.network.socket.getdefaulttimeout", return_value=5.0),
+        patch("sbom_validator.network.socket.setdefaulttimeout") as set_timeout,
     ):
         configure_network_timeout()
 
