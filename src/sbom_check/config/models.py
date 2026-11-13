@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from sbom_check.models import ValidationSeverity
 
 
 class ConfigMetadata(BaseModel):
@@ -164,12 +166,335 @@ class CustomRule(BaseModel):
     max_age_days: int | None = None
 
 
+class CompletenessCheckRule(BaseModel):
+    """Per-rule configuration for a Qualcomm completeness check.
+
+    Controls whether a given completeness rule (identified elsewhere by
+    ``rule_id``) is enabled, how loud its findings are reported, which
+    SPDX document versions it applies to, and whether it has an
+    approved implementation/mapping at all.
+    """
+
+    enabled: bool = True
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    spdx_versions: list[str] = Field(default_factory=lambda: ["2.3", "3.0.1"])
+    description: str | None = None
+    remediation: str | None = None
+    # Set False for a rule that is defined (has a rule_id and config entry)
+    # but has no implementation/approved mapping for the applicable
+    # document version. A rule with supported=False that is otherwise
+    # enabled and applicable to the document's spec version must produce
+    # RuleOutcome.UNSUPPORTED rather than being silently skipped: an
+    # unsupported-but-applicable rule fails closed so a document is never
+    # reported as complete when a required check never actually ran.
+    supported: bool = True
+
+    def applies_to_version(self, spec_version: str | None) -> bool:
+        """Check whether this rule applies to a given SPDX document version.
+
+        Args:
+            spec_version: The bare SPDX specification version of the
+                document being validated (e.g. ``"2.3"`` or ``"3.0.1"``),
+                or None if unknown.
+
+        Returns:
+            bool: True when ``spec_version`` is not None and is present
+            in ``spdx_versions``.
+        """
+        return spec_version is not None and spec_version in self.spdx_versions
+
+
 class ComplianceRequirementsConfig(BaseModel):
     """Configuration for compliance and quality requirements."""
 
     spdx_validation: SpdxValidationConfig = Field(default_factory=SpdxValidationConfig)
-    completeness_checks: dict[str, bool] = Field(default_factory=dict)
+    completeness_checks: dict[str, CompletenessCheckRule] = Field(default_factory=dict)
     quality_assurance: dict[str, bool] = Field(default_factory=dict)
+
+    @field_validator("completeness_checks", mode="before")
+    @classmethod
+    def _coerce_legacy_completeness_checks(cls, value: Any) -> Any:
+        """Coerce legacy boolean completeness-check entries to rule objects.
+
+        Existing configuration files in the wild use the legacy shape
+        ``{"require_x": true}``, where the value is a plain bool meaning
+        "enabled". This normalizes any bool value in the mapping to
+        ``CompletenessCheckRule(enabled=<bool>)`` before standard
+        validation runs, so legacy config files keep loading unchanged.
+        Non-bool values (e.g. already-structured dicts) pass through
+        untouched.
+
+        Args:
+            value: The raw ``completeness_checks`` mapping as parsed from
+                configuration input.
+
+        Returns:
+            Any: The mapping with any bool values replaced by
+            ``CompletenessCheckRule`` instances; non-dict input is
+            returned unchanged.
+        """
+        if not isinstance(value, dict):
+            return value
+        coerced: dict[str, Any] = {}
+        for key, entry in value.items():
+            if isinstance(entry, bool):
+                coerced[key] = CompletenessCheckRule(enabled=entry)
+            else:
+                coerced[key] = entry
+        return coerced
+
+
+def _default_spdx3_completeness_checks() -> dict[str, CompletenessCheckRule]:
+    """Build the default Qualcomm SPDX 3.0.1 completeness check entries.
+
+    Each entry enables one SPDX 3.0.1 completeness rule from
+    ``docs/spdx3-completeness-matrix.md`` for the ``default`` profile,
+    with the severity that matrix's "Severity rationale" section (6)
+    proposes. Every entry is scoped to ``spdx_versions=["3.0.1"]`` only,
+    so these checks never apply to SPDX 2.3 documents and the existing
+    SPDX 2.3 default-profile behavior is unaffected.
+
+    Returns:
+        dict[str, CompletenessCheckRule]: Mapping of the 21 approved
+        ``spdx3_completeness.*`` rule ids to their enabled, supported
+        configuration.
+    """
+
+    def _rule(
+        *, severity: ValidationSeverity, description: str, remediation: str
+    ) -> CompletenessCheckRule:
+        return CompletenessCheckRule(
+            enabled=True,
+            severity=severity,
+            spdx_versions=["3.0.1"],
+            supported=True,
+            description=description,
+            remediation=remediation,
+        )
+
+    error = ValidationSeverity.ERROR
+    warning = ValidationSeverity.WARNING
+
+    return {
+        "spdx3_completeness.document_name": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must have a non-empty name identifying it."
+            ),
+            remediation=(
+                "Set a clear, non-empty name on the SPDX document when you "
+                "generate the SBOM."
+            ),
+        ),
+        "spdx3_completeness.document_identifier": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must have a globally unique identifier "
+                "(spdxId) with no '#' fragment."
+            ),
+            remediation=(
+                "Make sure your SBOM tooling assigns the document a unique, "
+                "fragment-free identifier before you deliver it."
+            ),
+        ),
+        "spdx3_completeness.creation_timestamp": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must record when it was created, in "
+                "ISO-8601 UTC format."
+            ),
+            remediation=(
+                "Confirm your SBOM tooling stamps a valid creation date/time "
+                "(UTC) on every document you deliver."
+            ),
+        ),
+        "spdx3_completeness.creators": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must identify at least one creator "
+                "(organization, person, or tool) that produced it."
+            ),
+            remediation=(
+                "Make sure the tool or team that generated the SBOM is "
+                "recorded as a creator before you deliver it."
+            ),
+        ),
+        "spdx3_completeness.spec_version": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must declare that it conforms to SPDX "
+                "specification version 3.0.1."
+            ),
+            remediation=(
+                "Confirm your SBOM generation tooling is configured to emit "
+                "SPDX 3.0.1 and declares that version explicitly."
+            ),
+        ),
+        "spdx3_completeness.data_license": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must declare the license that applies to "
+                "the SBOM data itself."
+            ),
+            remediation=(
+                "Make sure your SBOM tooling sets a data license on the "
+                "document before delivery."
+            ),
+        ),
+        "spdx3_completeness.package_name": _rule(
+            severity=error,
+            description="Every package in the SBOM must have a non-empty name.",
+            remediation=(
+                "Provide a clear name for every package you include in the SBOM."
+            ),
+        ),
+        "spdx3_completeness.package_identifier": _rule(
+            severity=error,
+            description=(
+                "Every package in the SBOM must have a unique identifier (spdxId)."
+            ),
+            remediation=(
+                "Make sure every package you list has a unique identifier "
+                "assigned by your SBOM tooling."
+            ),
+        ),
+        "spdx3_completeness.package_version": _rule(
+            severity=error,
+            description="Every package in the SBOM must state its version.",
+            remediation=(
+                "Record the exact version of every package you deliver in the SBOM."
+            ),
+        ),
+        "spdx3_completeness.package_download_location": _rule(
+            severity=error,
+            description=(
+                "Every package in the SBOM must state where it can be downloaded from."
+            ),
+            remediation=(
+                "Provide a working download location (or explicitly state "
+                "none exists) for every package you deliver."
+            ),
+        ),
+        "spdx3_completeness.package_supplier": _rule(
+            severity=error,
+            description=(
+                "Every package in the SBOM must identify the organization "
+                "or person that supplied it."
+            ),
+            remediation=(
+                "Identify your organization (or the upstream supplier) as "
+                "the supplier of every package you deliver."
+            ),
+        ),
+        "spdx3_completeness.license_concluded": _rule(
+            severity=error,
+            description=(
+                "Every package in the SBOM must state the license your "
+                "organization concluded applies to it."
+            ),
+            remediation=(
+                "Record the license your organization has determined "
+                "applies to every package you deliver."
+            ),
+        ),
+        "spdx3_completeness.license_declared": _rule(
+            severity=error,
+            description=(
+                "Every package in the SBOM must state the license declared "
+                "by the package's authors or upstream source."
+            ),
+            remediation=(
+                "Record the license declared by the package's own authors "
+                "or upstream source for every package you deliver."
+            ),
+        ),
+        "spdx3_completeness.document_describes": _rule(
+            severity=error,
+            description=(
+                "The SBOM document must clearly state which package(s) it describes."
+            ),
+            remediation=(
+                "Make sure the SBOM explicitly links the document to the "
+                "package(s) it covers before you deliver it."
+            ),
+        ),
+        "spdx3_completeness.package_homepage": _rule(
+            severity=warning,
+            description=(
+                "Each package in the SBOM should state its homepage, when one exists."
+            ),
+            remediation=(
+                "Where a package has a public homepage, include it in the "
+                "SBOM for easier reference."
+            ),
+        ),
+        "spdx3_completeness.copyright_text": _rule(
+            severity=warning,
+            description=("Each package in the SBOM should state its copyright notice."),
+            remediation=(
+                "Include the copyright notice for each package you deliver, "
+                "where it is known."
+            ),
+        ),
+        "spdx3_completeness.package_cpe": _rule(
+            severity=warning,
+            description=(
+                "Where a package has an official CPE identifier, the SBOM "
+                "should include it."
+            ),
+            remediation=(
+                "Include the official CPE identifier for a package whenever "
+                "one has been assigned to it."
+            ),
+        ),
+        "spdx3_completeness.no_isolated_elements": _rule(
+            severity=warning,
+            description=(
+                "Every package and file in the SBOM should be linked back "
+                "to the document so nothing is orphaned."
+            ),
+            remediation=(
+                "Make sure every package and file you include is connected "
+                "to the document, not left disconnected from the rest of the "
+                "SBOM."
+            ),
+        ),
+        "spdx3_completeness.dependency_relationships": _rule(
+            severity=warning,
+            description=(
+                "When the SBOM lists more than one package, it should state "
+                "how those packages relate (e.g. one contains or depends on "
+                "another)."
+            ),
+            remediation=(
+                "Add containment or dependency relationships between the "
+                "packages you deliver so readers can see how they relate."
+            ),
+        ),
+        "spdx3_completeness.license_list_version": _rule(
+            severity=warning,
+            description=(
+                "Where a license expression states the SPDX license-list "
+                "version it was checked against, that version should be a "
+                "non-empty, properly formatted value."
+            ),
+            remediation=(
+                "If you record a license-list version on a license "
+                "expression, format it as a semantic version, e.g. '3.25.0'."
+            ),
+        ),
+        "spdx3_completeness.package_verification_code": _rule(
+            severity=warning,
+            description=(
+                "Where a package states a 2.X-style verification code, that "
+                "code should carry a non-empty hash value."
+            ),
+            remediation=(
+                "If you include a package verification code, make sure it "
+                "carries a non-empty hash value, or remove the malformed entry."
+            ),
+        ),
+    }
 
 
 class ReportingConfig(BaseModel):
@@ -314,6 +639,9 @@ class SbomCheckConfig(BaseModel):
                         )
                     ],
                 ),
+            ),
+            compliance_requirements=ComplianceRequirementsConfig(
+                completeness_checks=_default_spdx3_completeness_checks()
             ),
         )
 

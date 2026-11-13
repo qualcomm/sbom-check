@@ -209,6 +209,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
                 "spdx_valid": result.spdx_valid,
                 "profile_valid": result.profile_valid,
                 "profile_name": result.profile_name,
+                "rule_coverage": _rule_coverage_payload(result),
                 "summary": {
                     "errors": result.summary.errors,
                     "warnings": result.summary.warnings,
@@ -235,7 +236,7 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
         ],
     }
 
-    console.print(json.dumps(output_data, indent=2))
+    _emit_json(output_data)
 
 
 @click.command()
@@ -430,7 +431,10 @@ def _generate_config(loader: ConfigLoader, profile: str) -> None:
     """Generate a configuration template."""
     try:
         template = loader.generate_template(profile, include_comments=True)
-        console.print(template)
+        # Written to stdout rather than through the console: a generated
+        # template is meant to be redirected to a file and loaded back, and
+        # the console word-wraps long values into invalid YAML.
+        click.echo(template)
     except Exception as e:
         console.print(f"[red]Error generating config template: {e}[/red]")
         sys.exit(3)
@@ -481,6 +485,22 @@ def _result_profile_status(result: Any) -> ProfileStatus:
     return ProfileStatus.NOT_APPLICABLE
 
 
+def _print_unevaluated_rules(result: Any) -> None:
+    """Print profile rules that could not be evaluated.
+
+    Args:
+        result: Validation result carrying optional rule coverage.
+    """
+    coverage = getattr(result, "rule_coverage", None)
+    if not isinstance(coverage, list):
+        return
+    for entry in coverage:
+        if not getattr(entry, "blocks_completeness", False):
+            continue
+        reason = f": {entry.reason}" if entry.reason else ""
+        console.print(f"[yellow]   • {entry.rule_id} not evaluated{reason}[/yellow]")
+
+
 def _print_text_result(result: Any, file_path: str) -> None:
     """Print validation result in text format."""
     console.print(f"\n[bold]Validation Results for: {file_path}[/bold]")
@@ -515,6 +535,13 @@ def _print_text_result(result: Any, file_path: str) -> None:
         console.print("[blue]Info: Profile Validation: NOT APPLICABLE[/blue]")
     elif profile_status is ProfileStatus.PASSED:
         console.print("[green]✅ Profile Validation: PASSED[/green]")
+    elif profile_status in (ProfileStatus.SKIPPED, ProfileStatus.UNSUPPORTED):
+        # A profile that could not be evaluated is not a profile that
+        # failed. Say which it was, and never call it a pass.
+        console.print(
+            f"[yellow]⚠️  Profile Validation: {profile_status.value.upper()}[/yellow]"
+        )
+        _print_unevaluated_rules(result)
     else:
         console.print("[red]❌ Profile Validation: FAILED[/red]")
 
@@ -569,6 +596,48 @@ def _print_message(msg: Any, color: str) -> None:
         console.print(f"    Remediation: {msg.remediation}")
 
 
+def _rule_coverage_payload(result: Any) -> list[dict[str, Any]]:
+    """Serialise profile rule coverage for machine-readable output.
+
+    Consumers need to distinguish a rule that passed from one that never
+    ran, so every coverage entry is reported with its outcome.
+
+    Args:
+        result: Validation result carrying optional rule coverage.
+
+    Returns:
+        list[dict[str, Any]]: One entry per recorded rule, empty when the
+        result carries no coverage.
+    """
+    coverage = getattr(result, "rule_coverage", None)
+    if not isinstance(coverage, list):
+        return []
+
+    return [
+        {
+            "rule_id": entry.rule_id,
+            "outcome": entry.outcome.value,
+            "severity": entry.severity.value if entry.severity else None,
+            "description": entry.description,
+            "reason": entry.reason,
+        }
+        for entry in coverage
+    ]
+
+
+def _emit_json(payload: dict[str, Any]) -> None:
+    """Write a JSON payload to stdout verbatim.
+
+    ``console.print`` applies rich markup and word-wrapping, which inserts
+    newlines inside long string values and produces output that is not
+    parseable JSON. Machine-readable output must bypass the console.
+
+    Args:
+        payload: The JSON-serialisable result payload.
+    """
+    click.echo(json.dumps(payload, indent=2))
+
+
 def _print_json_result(result: Any) -> None:
     """Print validation result in JSON format."""
     # Convert result to JSON-serializable format
@@ -581,6 +650,7 @@ def _print_json_result(result: Any) -> None:
         "spdx_valid": result.spdx_valid,
         "profile_valid": result.profile_valid,
         "profile_name": result.profile_name,
+        "rule_coverage": _rule_coverage_payload(result),
         "file_path": result.file_path,
         "summary": {
             "errors": result.summary.errors,
@@ -605,7 +675,7 @@ def _print_json_result(result: Any) -> None:
         ],
     }
 
-    console.print(json.dumps(json_result, indent=2))
+    _emit_json(json_result)
 
 
 if __name__ == "__main__":

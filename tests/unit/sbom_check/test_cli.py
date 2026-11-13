@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 import sbom_check.cli as sbom_cli
@@ -21,6 +22,8 @@ from sbom_check.cli import (
     collect_sbom_files,
     main,
 )
+from sbom_check.config.loader import ConfigLoader
+from sbom_check.models import ValidationMessage, ValidationSeverity
 
 
 def _mock_spdx_result() -> Mock:
@@ -1050,16 +1053,42 @@ def test_text_output_uses_core_label_for_unknown_documents():
     assert "Profile: N/A" in output
 
 
-def test_json_output_includes_detected_format_and_specification():
+def test_json_output_includes_detected_format_and_specification(capsys):
     """JSON output exposes format-neutral metadata."""
     result = _format_result("CycloneDX", "1.7")
 
-    with patch("sbom_check.cli.console") as mocked_console:
-        _print_json_result(result)
+    _print_json_result(result)
 
-    output = mocked_console.print.call_args.args[0]
+    output = capsys.readouterr().out
     assert '"document_format": "CycloneDX"' in output
     assert '"spec_version": "1.7"' in output
+
+
+def test_json_output_is_parseable_for_long_messages(capsys):
+    """JSON output must never be word-wrapped into invalid JSON.
+
+    Printing through the rich console wraps long string values across
+    lines, which injects newlines inside JSON strings and breaks any
+    consumer that parses the output.
+    """
+    result = _format_result("SPDX", "2.3")
+    result.messages = [
+        ValidationMessage(
+            severity=ValidationSeverity.ERROR,
+            message=(
+                "SPDX 3.0.1 core validation is not available in this build, "
+                "so the document could not be checked against the SPDX "
+                "3.0.1 specification and no conformance conclusion is "
+                "available for this document."
+            ),
+            rule_id="spdx3_core_validation_unavailable",
+        )
+    ]
+
+    _print_json_result(result)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["messages"][0]["rule_id"] == "spdx3_core_validation_unavailable"
 
 
 def test_collect_sbom_files_deduplicates_brace_matches(tmp_path):
@@ -1071,3 +1100,25 @@ def test_collect_sbom_files_deduplicates_brace_matches(tmp_path):
     )
 
     assert files == [document.resolve()]
+
+
+def test_generate_config_output_is_loadable_yaml(tmp_path):
+    """A generated template must be usable as a configuration file.
+
+    Regression: printing through the rich console word-wraps long values
+    such as error_message, splitting them across lines and producing YAML
+    that no parser accepts.
+    """
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["--generate-config"])
+
+    assert result.exit_code == 0
+    parsed = yaml.safe_load(result.output)
+    checks = parsed["compliance_requirements"]["completeness_checks"]
+    assert checks["spdx3_completeness.package_supplier"]["severity"] == "ERROR"
+
+    config_path = tmp_path / "generated.yaml"
+    config_path.write_text(result.output, encoding="utf-8")
+    reloaded = ConfigLoader().load_from_file(config_path)
+    assert len(reloaded.compliance_requirements.completeness_checks) == len(checks)

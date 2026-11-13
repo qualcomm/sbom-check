@@ -8,7 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from sbom_check.models import (
+    DocumentFormat,
     ProfileStatus,
+    RuleCoverage,
+    RuleOutcome,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
@@ -204,3 +207,170 @@ def test_validation_severity_enum():
     # Test that it's a string enum
     assert isinstance(ValidationSeverity.ERROR, str)
     assert ValidationSeverity.ERROR.value == "ERROR"
+
+
+def test_document_format_enum_includes_spdx3():
+    """DocumentFormat gains SPDX3 while existing members keep their values."""
+    assert DocumentFormat.SPDX.value == "SPDX"
+    assert DocumentFormat.SPDX3.value == "SPDX3"
+    assert DocumentFormat.CYCLONEDX.value == "CycloneDX"
+    assert DocumentFormat.UNKNOWN.value == "unknown"
+
+
+def test_profile_status_enum_adds_skipped_and_unsupported():
+    """ProfileStatus gains SKIPPED/UNSUPPORTED; original members are unchanged."""
+    assert ProfileStatus.PASSED.value == "passed"
+    assert ProfileStatus.FAILED.value == "failed"
+    assert ProfileStatus.NOT_APPLICABLE.value == "not_applicable"
+    assert ProfileStatus.SKIPPED.value == "skipped"
+    assert ProfileStatus.UNSUPPORTED.value == "unsupported"
+
+
+def test_rule_outcome_enum_values():
+    """RuleOutcome exposes exactly the five documented members and values."""
+    assert RuleOutcome.PASSED.value == "passed"
+    assert RuleOutcome.FAILED.value == "failed"
+    assert RuleOutcome.SKIPPED.value == "skipped"
+    assert RuleOutcome.NOT_APPLICABLE.value == "not_applicable"
+    assert RuleOutcome.UNSUPPORTED.value == "unsupported"
+
+
+def test_rule_coverage_blocks_completeness_only_for_unsupported():
+    """blocks_completeness is True only for the UNSUPPORTED outcome."""
+    for outcome in (
+        RuleOutcome.PASSED,
+        RuleOutcome.FAILED,
+        RuleOutcome.SKIPPED,
+        RuleOutcome.NOT_APPLICABLE,
+    ):
+        coverage = RuleCoverage(rule_id="r1", outcome=outcome)
+        assert coverage.blocks_completeness is False
+
+    unsupported = RuleCoverage(rule_id="r1", outcome=RuleOutcome.UNSUPPORTED)
+    assert unsupported.blocks_completeness is True
+
+
+def test_add_rule_coverage_unsupported_flips_overall_valid_and_profile_status():
+    """An UNSUPPORTED rule fails overall_valid closed and downgrades profile_status."""
+    result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+        profile_status=ProfileStatus.PASSED,
+    )
+
+    result.add_rule_coverage(
+        RuleCoverage(rule_id="r1", outcome=RuleOutcome.UNSUPPORTED)
+    )
+
+    assert result.overall_valid is False
+    assert result.profile_status is ProfileStatus.SKIPPED
+    assert result.profile_valid is True  # profile_valid must not be touched
+
+
+def test_add_rule_coverage_passed_does_not_change_validity_or_status():
+    """A PASSED rule coverage entry leaves overall_valid and profile_status alone."""
+    result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+        profile_status=ProfileStatus.PASSED,
+    )
+
+    result.add_rule_coverage(RuleCoverage(rule_id="r1", outcome=RuleOutcome.PASSED))
+
+    assert result.overall_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
+
+
+def test_rules_by_outcome_filters_correctly():
+    """rules_by_outcome returns only coverage entries matching the given outcome."""
+    result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+    )
+    result.add_rule_coverage(RuleCoverage(rule_id="r1", outcome=RuleOutcome.PASSED))
+    result.add_rule_coverage(RuleCoverage(rule_id="r2", outcome=RuleOutcome.FAILED))
+    result.add_rule_coverage(
+        RuleCoverage(rule_id="r3", outcome=RuleOutcome.UNSUPPORTED)
+    )
+
+    passed = result.rules_by_outcome(RuleOutcome.PASSED)
+    unsupported = result.rules_by_outcome(RuleOutcome.UNSUPPORTED)
+
+    assert [c.rule_id for c in passed] == ["r1"]
+    assert [c.rule_id for c in unsupported] == ["r3"]
+
+
+def test_has_unevaluated_rules_true_and_false_cases():
+    """has_unevaluated_rules reflects whether any entry blocks completeness."""
+    result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+    )
+    assert result.has_unevaluated_rules() is False
+
+    result.add_rule_coverage(RuleCoverage(rule_id="r1", outcome=RuleOutcome.PASSED))
+    assert result.has_unevaluated_rules() is False
+
+    result.add_rule_coverage(
+        RuleCoverage(rule_id="r2", outcome=RuleOutcome.UNSUPPORTED)
+    )
+    assert result.has_unevaluated_rules() is True
+
+
+def test_combine_unsupported_rule_coverage_forces_overall_invalid():
+    """An unevaluated required rule forces overall_valid False with zero errors.
+
+    This is the central guarantee: a document cannot be reported as
+    complete when a required completeness rule never actually ran, even
+    if the core result is valid and there are no error messages at all.
+    """
+    core_result = SimpleNamespace(is_valid=True, messages=[])
+    unsupported = RuleCoverage(rule_id="r1", outcome=RuleOutcome.UNSUPPORTED)
+
+    result = SbomCheckResult.combine(
+        core_result=core_result,
+        profile_rule_coverage=[unsupported],
+    )
+
+    assert result.summary.errors == 0
+    assert result.overall_valid is False
+    assert result.profile_status is ProfileStatus.SKIPPED
+
+
+def test_combine_spdx3_document_format_sets_spdx_valid_and_profile_name():
+    """combine() treats SPDX3 as an SPDX document for spdx_valid/profile_name."""
+    core_result = SimpleNamespace(is_valid=True, messages=[])
+
+    result = SbomCheckResult.combine(
+        core_result=core_result,
+        document_format=DocumentFormat.SPDX3,
+        profile_name="qualcomm-spdx3",
+        spec_version="3.0.1",
+    )
+
+    assert result.spdx_valid is True
+    assert result.profile_name == "qualcomm-spdx3"
+    assert result.profile_status is ProfileStatus.PASSED
+
+
+def test_combine_without_rule_coverage_behaves_as_before_for_spdx23():
+    """Regression: combine() with no profile_rule_coverage is unchanged for SPDX 2.3."""
+    core_result = SimpleNamespace(is_valid=True, messages=[])
+
+    result = SbomCheckResult.combine(
+        core_result=core_result,
+        document_format=DocumentFormat.SPDX,
+        profile_name="qualcomm",
+        spec_version="2.3",
+    )
+
+    assert result.overall_valid is True
+    assert result.spdx_valid is True
+    assert result.profile_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
+    assert result.profile_name == "qualcomm"
+    assert result.rule_coverage == []

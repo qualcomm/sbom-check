@@ -15,6 +15,39 @@ import yaml
 from sbom_check.config.models import SbomCheckConfig
 
 
+def _unknown_completeness_rule_errors(config: SbomCheckConfig) -> list[str]:
+    """Report completeness-check keys that match no registered rule.
+
+    A mistyped rule ID would otherwise be accepted and have no effect,
+    leaving an operator believing they had disabled or downgraded a rule
+    that in fact still runs at its default severity.
+
+    Args:
+        config: The loaded configuration to inspect.
+
+    Returns:
+        list[str]: One message per unrecognised rule ID, empty when all
+        keys are known. Legacy boolean-style keys that predate the rule
+        registry are not reported, since they were never executed.
+    """
+    # Imported here to avoid a module-level cycle: the rules package
+    # depends on the config models.
+    from sbom_check.profile.rules_spdx3 import (  # noqa: PLC0415  # pylint: disable=import-outside-toplevel,cyclic-import
+        SPDX3_RULES,
+    )
+
+    known = {rule.rule_id for rule in SPDX3_RULES}
+    configured = set(config.compliance_requirements.completeness_checks)
+    unknown = sorted(
+        key for key in configured - known if key.startswith("spdx3_completeness.")
+    )
+    return [
+        f"Unknown completeness rule '{key}'; it will have no effect. "
+        f"Known SPDX 3.0.1 rules: {', '.join(sorted(known))}"
+        for key in unknown
+    ]
+
+
 class ConfigLoader:
     """Loads and manages SBOM-Check configurations."""
 
@@ -148,7 +181,11 @@ class ConfigLoader:
             ValueError: If format_type is not supported
         """
         output_path = Path(output_path)
-        config_data = config.model_dump(exclude_none=True)
+        # mode="json" renders enum values (for example completeness-check
+        # severities) as plain strings. A plain model_dump() emits enum
+        # objects, which yaml.dump writes as Python object tags that
+        # yaml.safe_load then refuses to read back.
+        config_data = config.model_dump(exclude_none=True, mode="json")
 
         with output_path.open("w", encoding="utf-8") as f:
             if format_type.lower() == "yaml":
@@ -179,7 +216,7 @@ class ConfigLoader:
             YAML configuration template as string
         """
         config = self.load_profile(profile_name)
-        config_data = config.model_dump(exclude_none=True)
+        config_data = config.model_dump(exclude_none=True, mode="json")
 
         if include_comments:
             # Add comments to explain configuration sections
@@ -228,6 +265,8 @@ class ConfigLoader:
 
             if not config.metadata.version:
                 errors.append("Configuration metadata.version is required")
+
+            errors.extend(_unknown_completeness_rule_errors(config))
 
             # Validate field validation rules
             for (
