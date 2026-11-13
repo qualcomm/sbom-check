@@ -16,12 +16,13 @@ from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
     RuleCoverage,
-    RuleOutcome,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
     ValidationSummary,
 )
+from sbom_check.profile.registry import ProfileRuleRegistry, RuleContext
+from sbom_check.profile.rules_spdx3 import register_spdx3_rules
 from spdx_validator.engine import ValidationEngine
 from spdx_validator.models import DEFAULT_FILES_ANALYZED
 
@@ -184,12 +185,17 @@ class SbomCheckEngine:
         core_result = selected_engine.validate_dict(sbom_data)
 
         # The SPDX 2.3 profile rules read SPDX 2.3 JSON field paths and
-        # cannot be applied to the SPDX 3.0.1 object model.
-        profile_result = (
-            self._validate_profile_requirements(sbom_data)
-            if detected.format is DocumentFormat.SPDX
-            else None
-        )
+        # cannot be applied to the SPDX 3.0.1 object model, which uses a
+        # typed element graph instead.
+        profile_result: SbomCheckResult | None = None
+        rule_coverage: list[RuleCoverage] | None = None
+
+        if detected.format is DocumentFormat.SPDX:
+            profile_result = self._validate_profile_requirements(sbom_data)
+        elif detected.format is DocumentFormat.SPDX3:
+            profile_result, rule_coverage = self._validate_spdx3_profile(
+                sbom_data, detected.spec_version
+            )
 
         # Combine results
         combined_result = SbomCheckResult.combine(
@@ -199,44 +205,56 @@ class SbomCheckEngine:
             file_path=file_path,
             document_format=detected.format,
             spec_version=detected.spec_version,
-            profile_rule_coverage=self._profile_rule_coverage(detected.format),
+            profile_rule_coverage=rule_coverage,
         )
 
         return combined_result
 
-    @staticmethod
-    def _profile_rule_coverage(
-        document_format: DocumentFormat,
-    ) -> list[RuleCoverage] | None:
-        """Report coverage for profile rules that could not be evaluated.
-
-        SPDX 3.0.1 Qualcomm completeness rules are not implemented yet.
-        Reporting no coverage would let an SPDX 3 document appear to have
-        passed profile validation when no rule ran at all, so the gap is
-        recorded explicitly as unsupported and fails closed.
+    def _validate_spdx3_profile(
+        self, sbom_data: dict[str, Any], spec_version: str | None
+    ) -> tuple[SbomCheckResult, list[RuleCoverage]]:
+        """Run the Qualcomm completeness profile for an SPDX 3.0.1 document.
 
         Args:
-            document_format: Detected format of the document.
+            sbom_data: Parsed SPDX 3.0.1 document.
+            spec_version: Detected specification version.
 
         Returns:
-            list[RuleCoverage] | None: One unsupported entry for SPDX 3
-            documents, otherwise None.
+            tuple[SbomCheckResult, list[RuleCoverage]]: The profile result
+            and one coverage entry per registered rule, so a caller can
+            tell a rule that passed from one that never ran.
         """
-        if document_format is not DocumentFormat.SPDX3:
-            return None
+        registry = ProfileRuleRegistry()
+        register_spdx3_rules(registry)
 
-        return [
-            RuleCoverage(
-                rule_id="spdx3_completeness",
-                outcome=RuleOutcome.UNSUPPORTED,
-                description="Qualcomm SPDX 3.0.1 completeness profile",
-                reason=(
-                    "Qualcomm completeness rules for SPDX 3.0.1 are not "
-                    "implemented yet, so this document was not checked "
-                    "against the Qualcomm profile."
-                ),
+        context = RuleContext(
+            spec_version=spec_version,
+            document_format=DocumentFormat.SPDX3,
+            config=self.config,
+        )
+        messages, coverage = registry.run(sbom_data, context)
+
+        result = SbomCheckResult(
+            overall_valid=True,
+            spdx_valid=True,  # Overridden in combine().
+            profile_valid=True,
+            profile_name=self.config.metadata.name,
+            document_format=DocumentFormat.SPDX3,
+            spec_version=spec_version,
+        )
+        for message in messages:
+            result.add_message(
+                message.severity,
+                message.message,
+                rule_id=message.rule_id,
+                field_path=message.field_path,
+                section_reference=message.section_reference,
+                found_value=message.found_value,
+                expected_value=message.expected_value,
+                remediation=message.remediation,
             )
-        ]
+
+        return result, coverage
 
     def _unsupported_result(
         self, error: UnsupportedDocumentError, file_path: str | None = None
