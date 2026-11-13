@@ -2,8 +2,6 @@
 
 ## Status: PROPOSED — awaiting approval by Qualcomm SBOM owners
 
-- **Ticket:** QSWCCT-25260 — "Add SPDX 3.0.1 completeness and Qualcomm profile validation to
-  sbom-check"
 - **Document status:** This is a decision document, not an implementation record. Nothing in
   it has been approved. It exists to get a row-by-row sign-off from the Qualcomm SBOM owners
   before any SPDX 3.0.1 completeness rule is enabled.
@@ -92,7 +90,7 @@ or config field exists, that is stated explicitly rather than implied.
 | `spdx3_completeness.creators` | `missing_required_field` (`creationInfo.creators`) | `CreationInfo.createdBy` referencing `Agent`/`Organization` graph elements | REPRESENTED_DIFFERENTLY | ERROR | 2.3 stores creators as strings (`"Tool: X"`, `"Organization: Y"`) inline; 3.0.1 requires real `Agent`/`Organization` elements linked via `createdBy`, so the check becomes "does `createdBy` resolve to at least one such element" rather than a string-count check. |
 | `spdx3_completeness.spec_version` | `invalid_field_value` (`spdxVersion` exact value `SPDX-2.3`) | `CreationInfo.specVersion` | REPRESENTED_DIFFERENTLY | ERROR | Same intent (pin the spec version), but 3.0.1 has no top-level `spdxVersion` field; the value lives on `CreationInfo.specVersion` and the expected exact value becomes `3.0.1`. |
 | `spdx3_completeness.data_license` | `invalid_field_value` (`dataLicense` exact value `CC0-1.0`) | `dataLicense` on `SpdxDocument` (`Core/dataLicense`, range `SimpleLicensing/AnyLicenseInfo`, `sh:maxCount 1`, IRI-valued) | REPRESENTED_DIFFERENTLY | ERROR | Verified against `spdx-model.ttl`: `dataLicense` **does** exist in 3.0.1 on `SpdxDocument`. The difference is shape, not existence: 2.3 compares a literal string to `CC0-1.0`, whereas 3.0.1 requires an IRI reference to an `AnyLicenseInfo` element, so the check must resolve the referenced license element rather than string-compare. Note it is optional in 3.0.1 (`maxCount 1`, no `minCount`), unlike 2.3 where it is mandatory. |
-| `spdx3_completeness.license_list_version` | `missing_required_field` (`creationInfo.licenseListVersion`) | `simplelicensing_licenseListVersion` (`SimpleLicensing/licenseListVersion`, `xsd:string`) | REPRESENTED_DIFFERENTLY | WARNING | Verified present in the 3.0.1 context and model. In 2.3 it sits on `creationInfo`; in 3.0.1 it is a SimpleLicensing-profile property, so it is no longer document-creation metadata and is not guaranteed on every document. Proposed advisory rather than blocking because of that relocation — see Open Question 6. |
+| `spdx3_completeness.license_list_version` | `missing_required_field` (`creationInfo.licenseListVersion`) | `simplelicensing_licenseListVersion` on each `simplelicensing_LicenseExpression` element (`SimpleLicensing/licenseListVersion`, `xsd:string`, `sh:maxCount 1`, semver-patterned) | REPRESENTED_DIFFERENTLY | WARNING | Verified against `spdx-model.ttl`: the property is declared on the **`LicenseExpression`** shape, not on `CreationInfo`. In 2.3 the licence-list version is document-level creation metadata; in 3.0.1 it is per-licence-expression and optional, so there is no single document-wide value to require. The check therefore applies per `LicenseExpression` element. Proposed advisory for that reason — see Open Question 6. |
 
 ### Package & component metadata
 
@@ -162,7 +160,7 @@ NOT_APPLICABLE = 2, NEEDS_DECISION = 5.
 
 ## 5. Rules with no SPDX 3.0.1 equivalent
 
-Each of these has a stated behavior per the ticket's requirement — none are left ambiguous:
+Each of these has a stated behavior — none are left ambiguous:
 
 | Rule | Behavior |
 |---|---|
@@ -212,9 +210,9 @@ default-profile question.
 4. Until a `NEEDS_DECISION` row is resolved, how should SBOM-Check behave? Specifically:
    should the engine (a) skip the check entirely and say nothing, (b) emit an explicit `info`
    -severity message stating the rule is pending a Qualcomm decision so it is visible but
-   non-blocking, or (c) something else? The ticket requires that a document must never be
-   reported "complete" while a `NEEDS_DECISION` row is silently skipped — which of these
-   satisfies that for you?
+   non-blocking, or (c) something else? A document must never be reported "complete"
+   while a `NEEDS_DECISION` row is silently skipped — which of these satisfies that
+   for you?
 5. For `spdx3_completeness.package_purl`, should validation target the `software_packageUrl`
    property, an `ExternalIdentifier` element with `externalIdentifierType: purl`, or both?
 6. For `spdx3_completeness.license_list_version`, is tracking the SPDX license-list version a
@@ -222,7 +220,7 @@ default-profile question.
    model should it be recorded?
 7. Are vulnerability/VEX information (`spdx3_completeness.vulnerability_info`) and build
    provenance (`spdx3_completeness.provenance_info`) in scope for this completeness profile,
-   or should they be deferred to a separate ticket/profile entirely?
+   or should they be deferred to a separate profile entirely?
 
 ---
 

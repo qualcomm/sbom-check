@@ -265,6 +265,200 @@ def test_saved_config_with_severity_can_be_reloaded(tmp_path, format_type):
     assert rule.remediation == "Add a suppliedBy reference."
 
 
+def test_create_default_populates_all_21_spdx3_completeness_checks():
+    """create_default() enables all 21 approved SPDX 3.0.1 completeness rules."""
+    config = SbomCheckConfig.create_default()
+    checks = config.compliance_requirements.completeness_checks
+
+    expected_rule_ids = {
+        "spdx3_completeness.document_name",
+        "spdx3_completeness.document_identifier",
+        "spdx3_completeness.creation_timestamp",
+        "spdx3_completeness.creators",
+        "spdx3_completeness.spec_version",
+        "spdx3_completeness.data_license",
+        "spdx3_completeness.package_name",
+        "spdx3_completeness.package_identifier",
+        "spdx3_completeness.package_version",
+        "spdx3_completeness.package_download_location",
+        "spdx3_completeness.package_supplier",
+        "spdx3_completeness.license_concluded",
+        "spdx3_completeness.license_declared",
+        "spdx3_completeness.document_describes",
+        "spdx3_completeness.package_homepage",
+        "spdx3_completeness.copyright_text",
+        "spdx3_completeness.package_cpe",
+        "spdx3_completeness.no_isolated_elements",
+        "spdx3_completeness.dependency_relationships",
+        "spdx3_completeness.license_list_version",
+        "spdx3_completeness.package_verification_code",
+    }
+
+    assert set(checks.keys()) == expected_rule_ids
+    assert len(checks) == 21
+    for rule_id, rule in checks.items():
+        assert rule.enabled is True, rule_id
+        assert rule.supported is True, rule_id
+
+
+def test_default_spdx3_completeness_checks_do_not_apply_to_spdx_2_3():
+    """Every default SPDX 3.0.1 completeness entry is scoped to 3.0.1 only,
+    so SPDX 2.3 documents keep producing byte-identical results (non-regression)."""
+    config = SbomCheckConfig.create_default()
+    checks = config.compliance_requirements.completeness_checks
+
+    assert len(checks) == 21
+    for rule_id, rule in checks.items():
+        assert rule.spdx_versions == ["3.0.1"], rule_id
+        assert rule.applies_to_version("2.3") is False, rule_id
+        assert rule.applies_to_version("3.0.1") is True, rule_id
+
+
+def test_default_spdx3_completeness_checks_error_and_warning_sets_match_matrix():
+    """Severities assigned in create_default() match the completeness matrix's
+    Section 6 proposed ERROR/WARNING split exactly."""
+    config = SbomCheckConfig.create_default()
+    checks = config.compliance_requirements.completeness_checks
+
+    expected_error = {
+        "spdx3_completeness.document_name",
+        "spdx3_completeness.document_identifier",
+        "spdx3_completeness.creation_timestamp",
+        "spdx3_completeness.creators",
+        "spdx3_completeness.spec_version",
+        "spdx3_completeness.data_license",
+        "spdx3_completeness.package_name",
+        "spdx3_completeness.package_identifier",
+        "spdx3_completeness.package_version",
+        "spdx3_completeness.package_download_location",
+        "spdx3_completeness.package_supplier",
+        "spdx3_completeness.license_concluded",
+        "spdx3_completeness.license_declared",
+        "spdx3_completeness.document_describes",
+    }
+    expected_warning = {
+        "spdx3_completeness.package_homepage",
+        "spdx3_completeness.copyright_text",
+        "spdx3_completeness.package_cpe",
+        "spdx3_completeness.no_isolated_elements",
+        "spdx3_completeness.dependency_relationships",
+        "spdx3_completeness.license_list_version",
+        "spdx3_completeness.package_verification_code",
+    }
+
+    actual_error = {
+        rule_id
+        for rule_id, rule in checks.items()
+        if rule.severity is ValidationSeverity.ERROR
+    }
+    actual_warning = {
+        rule_id
+        for rule_id, rule in checks.items()
+        if rule.severity is ValidationSeverity.WARNING
+    }
+
+    assert actual_error == expected_error
+    assert actual_warning == expected_warning
+    assert expected_error | expected_warning == set(checks.keys())
+
+
+def test_default_spdx3_completeness_checks_have_description_and_remediation():
+    """Every default SPDX 3.0.1 completeness entry carries supplier-facing
+    description and remediation text."""
+    config = SbomCheckConfig.create_default()
+    checks = config.compliance_requirements.completeness_checks
+
+    assert len(checks) == 21
+    for rule_id, rule in checks.items():
+        assert rule.description, rule_id
+        assert rule.description.strip(), rule_id
+        assert rule.remediation, rule_id
+        assert rule.remediation.strip(), rule_id
+
+
+def test_create_basic_spdx_has_no_completeness_checks():
+    """create_basic_spdx() stays core-specification-only: no completeness checks."""
+    config = SbomCheckConfig.create_basic_spdx()
+
+    assert config.compliance_requirements.completeness_checks == {}
+
+
+@pytest.mark.parametrize("format_type", ["yaml", "json"])
+def test_default_config_spdx3_completeness_checks_survive_round_trip(
+    tmp_path, format_type
+):
+    """create_default()'s SPDX 3.0.1 completeness checks survive a save/load
+    round-trip through ConfigLoader in both yaml and json."""
+    loader = ConfigLoader()
+    config = SbomCheckConfig.create_default()
+
+    output_path = tmp_path / f"config.{format_type}"
+    loader.save_to_file(config, output_path, format_type)
+    reloaded = loader.load_from_file(output_path)
+
+    original_checks = config.compliance_requirements.completeness_checks
+    reloaded_checks = reloaded.compliance_requirements.completeness_checks
+
+    assert set(reloaded_checks.keys()) == set(original_checks.keys())
+    assert len(reloaded_checks) == 21
+    for rule_id, original_rule in original_checks.items():
+        reloaded_rule = reloaded_checks[rule_id]
+        assert reloaded_rule.enabled == original_rule.enabled, rule_id
+        assert reloaded_rule.supported == original_rule.supported, rule_id
+        assert reloaded_rule.severity == original_rule.severity, rule_id
+        assert reloaded_rule.spdx_versions == original_rule.spdx_versions, rule_id
+        assert reloaded_rule.description == original_rule.description, rule_id
+        assert reloaded_rule.remediation == original_rule.remediation, rule_id
+
+
+def test_merge_with_preserves_unoverridden_default_spdx3_completeness_checks():
+    """A user config overriding ONE rule's severity still leaves the other 20
+    default SPDX 3.0.1 completeness checks intact after merge_with (guards the
+    shallow-merge behavior of ComplianceRequirementsConfig.completeness_checks)."""
+    base = SbomCheckConfig.create_default()
+    override = SbomCheckConfig(
+        metadata={"name": "n", "version": "1.0"},
+        compliance_requirements={
+            "completeness_checks": {
+                "spdx3_completeness.package_homepage": {
+                    "severity": "ERROR",
+                }
+            }
+        },
+    )
+
+    merged = base.merge_with(override)
+    checks = merged.compliance_requirements.completeness_checks
+
+    # The overridden rule took the override's severity.
+    assert checks["spdx3_completeness.package_homepage"].severity == (
+        ValidationSeverity.ERROR
+    )
+
+    # NOTE: merge_with() merges `completeness_checks` as a whole dict value
+    # (model_dump() -> plain dict -> recursive dict merge), and
+    # merge_dicts() only recurses into keys present in BOTH base and
+    # override dicts. Since override's completeness_checks dict contains
+    # only "spdx3_completeness.package_homepage", that single key is
+    # replaced wholesale, and the override dict otherwise does not
+    # contain any of the other 20 rule_id keys to collide with -- so the
+    # other 20 keys from base pass through unchanged. This test asserts
+    # that ACTUAL (correct, as it happens) behavior.
+    base_checks = base.compliance_requirements.completeness_checks
+    for rule_id, base_rule in base_checks.items():
+        if rule_id == "spdx3_completeness.package_homepage":
+            continue
+        merged_rule = checks[rule_id]
+        assert merged_rule.enabled == base_rule.enabled, rule_id
+        assert merged_rule.supported == base_rule.supported, rule_id
+        assert merged_rule.severity == base_rule.severity, rule_id
+        assert merged_rule.spdx_versions == base_rule.spdx_versions, rule_id
+        assert merged_rule.description == base_rule.description, rule_id
+        assert merged_rule.remediation == base_rule.remediation, rule_id
+
+    assert len(checks) == 21
+
+
 def test_saved_config_contains_no_python_object_tags(tmp_path):
     """Serialized YAML must be plain data, loadable by any YAML parser."""
     config = SbomCheckConfig.model_validate(
@@ -280,3 +474,42 @@ def test_saved_config_contains_no_python_object_tags(tmp_path):
     ConfigLoader().save_to_file(config, output_path)
 
     assert "python/object" not in output_path.read_text(encoding="utf-8")
+
+
+def test_validate_config_file_rejects_unknown_completeness_rule(tmp_path):
+    """A mistyped SPDX 3.0.1 rule ID must be reported, not accepted."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "metadata:\n"
+        "  name: Typo\n"
+        "  version: '1.0'\n"
+        "compliance_requirements:\n"
+        "  completeness_checks:\n"
+        "    spdx3_completeness.package_supplierr:\n"
+        "      enabled: false\n",
+        encoding="utf-8",
+    )
+
+    is_valid, errors = ConfigLoader().validate_config_file(config_path)
+
+    assert is_valid is False
+    assert any("package_supplierr" in error for error in errors)
+
+
+def test_validate_config_file_accepts_legacy_completeness_keys(tmp_path):
+    """Legacy boolean keys must not be reported as unknown rules."""
+    config_path = tmp_path / "legacy.yaml"
+    config_path.write_text(
+        "metadata:\n"
+        "  name: Legacy\n"
+        "  version: '1.0'\n"
+        "compliance_requirements:\n"
+        "  completeness_checks:\n"
+        "    require_package_identifier: true\n",
+        encoding="utf-8",
+    )
+
+    is_valid, errors = ConfigLoader().validate_config_file(config_path)
+
+    assert is_valid is True
+    assert errors == []

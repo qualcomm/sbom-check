@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 import sbom_check.cli as sbom_cli
@@ -21,6 +22,7 @@ from sbom_check.cli import (
     collect_sbom_files,
     main,
 )
+from sbom_check.config.loader import ConfigLoader
 from sbom_check.models import ValidationMessage, ValidationSeverity
 
 
@@ -1098,3 +1100,25 @@ def test_collect_sbom_files_deduplicates_brace_matches(tmp_path):
     )
 
     assert files == [document.resolve()]
+
+
+def test_generate_config_output_is_loadable_yaml(tmp_path):
+    """A generated template must be usable as a configuration file.
+
+    Regression: printing through the rich console word-wraps long values
+    such as error_message, splitting them across lines and producing YAML
+    that no parser accepts.
+    """
+    runner = CliRunner()
+
+    result = runner.invoke(main, ["--generate-config"])
+
+    assert result.exit_code == 0
+    parsed = yaml.safe_load(result.output)
+    checks = parsed["compliance_requirements"]["completeness_checks"]
+    assert checks["spdx3_completeness.package_supplier"]["severity"] == "ERROR"
+
+    config_path = tmp_path / "generated.yaml"
+    config_path.write_text(result.output, encoding="utf-8")
+    reloaded = ConfigLoader().load_from_file(config_path)
+    assert len(reloaded.compliance_requirements.completeness_checks) == len(checks)

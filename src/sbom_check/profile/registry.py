@@ -101,6 +101,38 @@ class ProfileRuleRegistry:
         """
         return list(self._rules.values())
 
+    def _unknown_rule_coverage(self, context: RuleContext) -> list[RuleCoverage]:
+        """Report configured rule IDs that match no registered rule.
+
+        An unrecognised ID is almost always a typo. Reporting it as
+        unsupported fails closed, because an operator who believes they
+        disabled or downgraded a rule should not silently get its default
+        behaviour instead.
+
+        Args:
+            context: Execution context carrying the effective config.
+
+        Returns:
+            list[RuleCoverage]: One unsupported entry per unrecognised
+            ``spdx3_completeness.*`` key. Legacy boolean-style keys
+            predate the registry and were never executed, so they are not
+            treated as typos.
+        """
+        configured = set(context.config.compliance_requirements.completeness_checks)
+        return [
+            RuleCoverage(
+                rule_id=unknown,
+                outcome=RuleOutcome.UNSUPPORTED,
+                severity=None,
+                description=None,
+                reason=(
+                    "configured rule is not registered; check the rule ID for a typo"
+                ),
+            )
+            for unknown in sorted(configured - set(self._rules))
+            if unknown.startswith("spdx3_completeness.")
+        ]
+
     def run(
         self, document: Any, context: RuleContext
     ) -> tuple[list[ValidationMessage], list[RuleCoverage]]:
@@ -127,6 +159,8 @@ class ProfileRuleRegistry:
         """
         all_messages: list[ValidationMessage] = []
         coverage_list: list[RuleCoverage] = []
+
+        coverage_list.extend(self._unknown_rule_coverage(context))
 
         for rule in self.rules():
             cfg = context.config.compliance_requirements.completeness_checks.get(

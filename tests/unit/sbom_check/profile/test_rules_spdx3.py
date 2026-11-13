@@ -18,13 +18,16 @@ from sbom_check.profile.rules_spdx3 import (
     SPDX3_RULES,
     CreationTimestampRule,
     CreatorsRule,
+    DependencyRelationshipsRule,
     DocumentDescribesRule,
     DocumentIdentifierRule,
+    LicenseListVersionRule,
     NoIsolatedElementsRule,
     PackageCpeRule,
     PackageIdentifierRule,
     PackageNameRule,
     PackageSupplierRule,
+    PackageVerificationCodeRule,
     SpecVersionRule,
     register_spdx3_rules,
 )
@@ -402,6 +405,222 @@ class TestPackageCpeRule:
         """A package with no CPE entry at all passes (conditional rule)."""
 
         assert PackageCpeRule().evaluate(INCOMPLETE_PACKAGE_DOC, _context()) == []
+
+
+def _second_package(doc: dict[str, Any], spdx_id: str, name: str) -> dict[str, Any]:
+    """Build a second bare package element for multi-package test fixtures.
+
+    Args:
+        doc: The source document to copy a CreationInfo reference style from.
+        spdx_id: The spdxId to assign the new package.
+        name: The name to assign the new package.
+
+    Returns:
+        dict[str, Any]: A minimal software_Package element.
+    """
+    _ = doc
+    return {
+        "type": "software_Package",
+        "spdxId": spdx_id,
+        "name": name,
+        "creationInfo": "_:creationInfo",
+    }
+
+
+class TestDependencyRelationshipsRule:
+    """dependency_relationships requires a contains/dependsOn link between packages."""
+
+    def test_two_packages_with_no_relationship_fires(self) -> None:
+        """Two packages with no contains/dependsOn relationship fires."""
+
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        doc["@graph"].append(
+            _second_package(doc, "https://qualcomm.example/spdx/pkg/second", "second")
+        )
+
+        messages = DependencyRelationshipsRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert messages[0].rule_id == "spdx3_completeness.dependency_relationships"
+
+    def test_two_packages_with_contains_passes(self) -> None:
+        """Two packages linked by a contains relationship pass."""
+
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        doc["@graph"].append(
+            _second_package(doc, "https://qualcomm.example/spdx/pkg/second", "second")
+        )
+        doc["@graph"].append(
+            {
+                "type": "Relationship",
+                "spdxId": "https://qualcomm.example/spdx/rel/contains",
+                "creationInfo": "_:creationInfo",
+                "from": "https://qualcomm.example/spdx/pkg/libwidget",
+                "relationshipType": "contains",
+                "to": ["https://qualcomm.example/spdx/pkg/second"],
+            }
+        )
+
+        assert DependencyRelationshipsRule().evaluate(doc, _context()) == []
+
+    def test_two_packages_with_depends_on_passes(self) -> None:
+        """Two packages linked by a dependsOn relationship pass."""
+
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        doc["@graph"].append(
+            _second_package(doc, "https://qualcomm.example/spdx/pkg/second", "second")
+        )
+        doc["@graph"].append(
+            {
+                "type": "Relationship",
+                "spdxId": "https://qualcomm.example/spdx/rel/depends",
+                "creationInfo": "_:creationInfo",
+                "from": "https://qualcomm.example/spdx/pkg/libwidget",
+                "relationshipType": "dependsOn",
+                "to": ["https://qualcomm.example/spdx/pkg/second"],
+            }
+        )
+
+        assert DependencyRelationshipsRule().evaluate(doc, _context()) == []
+
+    def test_single_package_passes(self) -> None:
+        """A single-package document passes (nothing to relate)."""
+
+        assert DependencyRelationshipsRule().evaluate(COMPLETE_DOC, _context()) == []
+
+    def test_zero_packages_passes(self) -> None:
+        """A document with no packages at all passes."""
+
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        doc["@graph"] = [
+            element
+            for element in doc["@graph"]
+            if element.get("type") != "software_Package"
+        ]
+
+        assert DependencyRelationshipsRule().evaluate(doc, _context()) == []
+
+
+class TestLicenseListVersionRule:
+    """license_list_version checks each LicenseExpression's optional version."""
+
+    def _doc_with_license_list_version(self, value: Any) -> dict[str, Any]:
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        for element in doc["@graph"]:
+            if element.get("type") == "simplelicensing_LicenseExpression":
+                if value is None:
+                    element.pop("simplelicensing_licenseListVersion", None)
+                else:
+                    element["simplelicensing_licenseListVersion"] = value
+        return doc
+
+    def test_valid_semver_version_passes(self) -> None:
+        """A LicenseExpression with a valid semver version passes."""
+
+        doc = self._doc_with_license_list_version("3.25.0")
+        assert LicenseListVersionRule().evaluate(doc, _context()) == []
+
+    def test_empty_version_fires(self) -> None:
+        """An empty simplelicensing_licenseListVersion fires."""
+
+        doc = self._doc_with_license_list_version("")
+        messages = LicenseListVersionRule().evaluate(doc, _context())
+        assert len(messages) == 1
+
+    def test_non_semver_version_fires(self) -> None:
+        """A non-semver-shaped value fires."""
+
+        doc = self._doc_with_license_list_version("not-a-version")
+        messages = LicenseListVersionRule().evaluate(doc, _context())
+        assert len(messages) == 1
+
+    def test_omitted_version_passes(self) -> None:
+        """A LicenseExpression that omits the property entirely passes."""
+
+        doc = self._doc_with_license_list_version(None)
+        assert LicenseListVersionRule().evaluate(doc, _context()) == []
+
+    def test_no_license_expression_elements_passes(self) -> None:
+        """A document with no LicenseExpression elements at all passes."""
+
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        doc["@graph"] = [
+            element
+            for element in doc["@graph"]
+            if element.get("type") != "simplelicensing_LicenseExpression"
+        ]
+
+        assert LicenseListVersionRule().evaluate(doc, _context()) == []
+
+
+class TestPackageVerificationCodeRule:
+    """package_verification_code checks verifiedUsing PackageVerificationCode entries."""
+
+    def _doc_with_verified_using(self, value: Any) -> dict[str, Any]:
+        doc = json.loads(json.dumps(COMPLETE_DOC))
+        for element in doc["@graph"]:
+            if element.get("type") == "software_Package":
+                if value is None:
+                    element.pop("verifiedUsing", None)
+                else:
+                    element["verifiedUsing"] = value
+        return doc
+
+    def test_real_hash_value_passes(self) -> None:
+        """A PackageVerificationCode with a real hashValue passes."""
+
+        doc = self._doc_with_verified_using(
+            {
+                "type": "PackageVerificationCode",
+                "hashValue": "abc123",
+            }
+        )
+        assert PackageVerificationCodeRule().evaluate(doc, _context()) == []
+
+    def test_empty_hash_value_fires(self) -> None:
+        """A PackageVerificationCode with an empty hashValue fires."""
+
+        doc = self._doc_with_verified_using(
+            {
+                "type": "PackageVerificationCode",
+                "hashValue": "",
+            }
+        )
+        messages = PackageVerificationCodeRule().evaluate(doc, _context())
+        assert len(messages) == 1
+
+    def test_no_verified_using_passes(self) -> None:
+        """A package with no verifiedUsing at all passes."""
+
+        doc = self._doc_with_verified_using(None)
+        assert PackageVerificationCodeRule().evaluate(doc, _context()) == []
+
+    def test_plain_hash_entry_is_ignored(self) -> None:
+        """A verifiedUsing entry typed Hash (not PackageVerificationCode) passes."""
+
+        doc = self._doc_with_verified_using(
+            {
+                "type": "Hash",
+                "algorithm": "sha256",
+                "hashValue": "abc123",
+            }
+        )
+        assert PackageVerificationCodeRule().evaluate(doc, _context()) == []
+
+    def test_iri_reference_form_resolves(self) -> None:
+        """A verifiedUsing IRI reference to a top-level element resolves correctly."""
+
+        doc = self._doc_with_verified_using(
+            "https://qualcomm.example/spdx/verification/libwidget"
+        )
+        doc["@graph"].append(
+            {
+                "@id": "https://qualcomm.example/spdx/verification/libwidget",
+                "type": "PackageVerificationCode",
+                "hashValue": "",
+            }
+        )
+        messages = PackageVerificationCodeRule().evaluate(doc, _context())
+        assert len(messages) == 1
 
 
 class TestRobustness:

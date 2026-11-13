@@ -15,6 +15,39 @@ import yaml
 from sbom_check.config.models import SbomCheckConfig
 
 
+def _unknown_completeness_rule_errors(config: SbomCheckConfig) -> list[str]:
+    """Report completeness-check keys that match no registered rule.
+
+    A mistyped rule ID would otherwise be accepted and have no effect,
+    leaving an operator believing they had disabled or downgraded a rule
+    that in fact still runs at its default severity.
+
+    Args:
+        config: The loaded configuration to inspect.
+
+    Returns:
+        list[str]: One message per unrecognised rule ID, empty when all
+        keys are known. Legacy boolean-style keys that predate the rule
+        registry are not reported, since they were never executed.
+    """
+    # Imported here to avoid a module-level cycle: the rules package
+    # depends on the config models.
+    from sbom_check.profile.rules_spdx3 import (  # noqa: PLC0415  # pylint: disable=import-outside-toplevel,cyclic-import
+        SPDX3_RULES,
+    )
+
+    known = {rule.rule_id for rule in SPDX3_RULES}
+    configured = set(config.compliance_requirements.completeness_checks)
+    unknown = sorted(
+        key for key in configured - known if key.startswith("spdx3_completeness.")
+    )
+    return [
+        f"Unknown completeness rule '{key}'; it will have no effect. "
+        f"Known SPDX 3.0.1 rules: {', '.join(sorted(known))}"
+        for key in unknown
+    ]
+
+
 class ConfigLoader:
     """Loads and manages SBOM-Check configurations."""
 
@@ -232,6 +265,8 @@ class ConfigLoader:
 
             if not config.metadata.version:
                 errors.append("Configuration metadata.version is required")
+
+            errors.extend(_unknown_completeness_rule_errors(config))
 
             # Validate field validation rules
             for (

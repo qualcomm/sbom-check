@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from sbom_check.config.models import (
@@ -125,7 +127,7 @@ def test_register_duplicate_rule_id_raises_value_error_naming_id():
     registry = ProfileRuleRegistry()
     registry.register(PassingRule())
 
-    with pytest.raises(ValueError, match="fake.passing"):
+    with pytest.raises(ValueError, match=re.escape("fake.passing")):
         registry.register(PassingRule())
 
 
@@ -211,7 +213,7 @@ def test_unsupported_config_flag_is_unsupported_and_blocks():
     registry.register(rule)
     config = _config_with(**{rule.rule_id: CompletenessCheckRule(supported=False)})
 
-    messages, coverage = registry.run(document={}, context=_context("2.3", config))
+    _messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
     assert rule.evaluated is False
     assert coverage[0].outcome is RuleOutcome.UNSUPPORTED
@@ -278,7 +280,38 @@ def test_rule_with_no_config_entry_runs_under_implicit_defaults():
     registry.register(rule)
     config = _config_with()
 
-    messages, coverage = registry.run(document={}, context=_context("2.3", config))
+    _messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
     assert rule.evaluated is True
     assert coverage[0].outcome is RuleOutcome.PASSED
+
+
+def test_configured_rule_that_is_not_registered_is_reported_unsupported():
+    """A mistyped rule ID must not silently have no effect.
+
+    An operator who believes they disabled or downgraded a rule should
+    not instead get its default behaviour with no warning, so an
+    unrecognised rule ID fails closed.
+    """
+    registry = ProfileRuleRegistry()
+    registry.register(PassingRule())
+    config = _config_with(**{"spdx3_completeness.typoed_rule": CompletenessCheckRule()})
+
+    _messages, coverage = registry.run(document={}, context=_context("2.3", config))
+
+    unknown = [e for e in coverage if e.rule_id == "spdx3_completeness.typoed_rule"]
+    assert len(unknown) == 1
+    assert unknown[0].outcome is RuleOutcome.UNSUPPORTED
+    assert unknown[0].blocks_completeness is True
+    assert "typo" in (unknown[0].reason or "")
+
+
+def test_legacy_completeness_keys_are_not_treated_as_typos():
+    """Legacy boolean-style keys predate the registry and never ran."""
+    registry = ProfileRuleRegistry()
+    registry.register(PassingRule())
+    config = _config_with(**{"require_package_identifier": CompletenessCheckRule()})
+
+    _messages, coverage = registry.run(document={}, context=_context("2.3", config))
+
+    assert [e for e in coverage if e.blocks_completeness] == []

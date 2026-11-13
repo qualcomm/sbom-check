@@ -431,7 +431,10 @@ def _generate_config(loader: ConfigLoader, profile: str) -> None:
     """Generate a configuration template."""
     try:
         template = loader.generate_template(profile, include_comments=True)
-        console.print(template)
+        # Written to stdout rather than through the console: a generated
+        # template is meant to be redirected to a file and loaded back, and
+        # the console word-wraps long values into invalid YAML.
+        click.echo(template)
     except Exception as e:
         console.print(f"[red]Error generating config template: {e}[/red]")
         sys.exit(3)
