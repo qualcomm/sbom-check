@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from click.testing import CliRunner
 
+from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from spdx3_validator.cli import main
 from spdx3_validator.models import (
     ValidationMessage,
@@ -69,6 +70,42 @@ def test_batch_continues_when_one_file_has_structured_input_error(tmp_path):
     assert "bad.spdx.json" in result.output
     assert "good.spdx.json" in result.output
     assert "spdx3_validation_input_error" in result.output
+
+
+def test_worker_caches_remote_failure_and_resets_for_next_cli_batch(tmp_path):
+    """A worker retries only once, and a new CLI batch starts with clean state."""
+    for name in ("first.spdx.json", "second.spdx.json"):
+        (tmp_path / name).write_text("{}", encoding="utf-8")
+
+    validation_result = ValidationResult(
+        is_valid=False,
+        schema_valid=None,
+        semantic_valid=None,
+        messages=[
+            ValidationMessage(
+                severity=ValidationSeverity.ERROR,
+                message="remote resource unavailable",
+                rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+            )
+        ],
+    )
+
+    with (
+        patch("spdx3_validator.cli.ProcessPoolExecutor", ThreadPoolExecutor),
+        patch("spdx3_validator.cli.ValidationEngine") as engine_class,
+        patch("spdx3_validator.cli.configure_network_timeout") as configure_timeout,
+    ):
+        engine_class.return_value.validate_file.return_value = validation_result
+
+        first_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+        second_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+
+    assert first_batch.exit_code == 4
+    assert second_batch.exit_code == 4
+    assert first_batch.output.count(REMOTE_RESOURCE_UNAVAILABLE_RULE_ID) == 2
+    assert second_batch.output.count(REMOTE_RESOURCE_UNAVAILABLE_RULE_ID) == 2
+    assert engine_class.return_value.validate_file.call_count == 2
+    assert configure_timeout.call_count == 2
 
 
 def test_remote_resource_failure_has_distinct_exit_code(tmp_path):

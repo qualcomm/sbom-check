@@ -24,6 +24,7 @@ from sbom_check.cli import (
     main,
 )
 from sbom_check.models import (
+    DocumentFormat,
     ProfileStatus,
     SbomCheckResult,
     ValidationMessage,
@@ -67,7 +68,7 @@ def test_worker_reuses_its_configured_engine() -> None:
             patch("sbom_check.cli.SbomCheckEngine") as engine_class,
         ):
             engine = engine_class.return_value
-            engine.validate_file.return_value = Mock()
+            engine.validate_file.return_value = Mock(messages=[])
 
             sbom_cli._initialize_worker(config)
             sbom_cli.validate_single_file(Path("first.spdx.json"), "default", None)
@@ -347,6 +348,67 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
 
     configure_timeout.assert_called_once_with()
     assert cli_result.exit_code == 4
+
+
+def test_worker_caches_spdx3_failure_only_for_spdx3_and_resets_between_batches(
+    tmp_path,
+):
+    """Reuse SPDX 3.0.1 outages without skipping other formats or future batches."""
+    spdx3_context = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
+    (tmp_path / "first.spdx.json").write_text(
+        json.dumps({"@context": spdx3_context}), encoding="utf-8"
+    )
+    (tmp_path / "second.spdx.json").write_text(
+        json.dumps({"spdxVersion": "SPDX-2.3"}), encoding="utf-8"
+    )
+    (tmp_path / "third.spdx.json").write_text(
+        json.dumps({"@context": spdx3_context}), encoding="utf-8"
+    )
+
+    failure_result = SbomCheckResult(
+        overall_valid=False,
+        spdx_valid=None,
+        profile_valid=None,
+        core_valid=False,
+        document_format=DocumentFormat.SPDX3,
+        spec_version="3.0.1",
+        messages=[
+            ValidationMessage(
+                severity=ValidationSeverity.ERROR,
+                message="remote resource unavailable",
+                rule_id="remote_resource_unavailable",
+            )
+        ],
+    )
+    spdx2_result = SbomCheckResult(
+        overall_valid=True,
+        spdx_valid=True,
+        profile_valid=True,
+        core_valid=True,
+        document_format=DocumentFormat.SPDX,
+        spec_version="2.3",
+    )
+
+    with (
+        patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor),
+        patch("sbom_check.cli.SbomCheckEngine") as engine_class,
+        patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+    ):
+        engine_class.return_value.validate_file.side_effect = [
+            failure_result,
+            spdx2_result,
+            failure_result,
+            spdx2_result,
+        ]
+        first_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+        second_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+
+    assert first_batch.exit_code == 4
+    assert second_batch.exit_code == 4
+    assert first_batch.output.count("remote resource unavailable") == 2
+    assert second_batch.output.count("remote resource unavailable") == 2
+    assert engine_class.return_value.validate_file.call_count == 4
+    assert configure_timeout.call_count == 2
 
 
 @patch("spdx3_validator.engine.ValidationEngine._validate_document")

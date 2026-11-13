@@ -25,8 +25,9 @@ except ImportError:
     __version__ = "dev"
 
 from sbom_check.config.loader import ConfigLoader
+from sbom_check.detection import detect_document
 from sbom_check.engine import SbomCheckEngine
-from sbom_check.models import ProfileStatus, ValidationSeverity
+from sbom_check.models import DocumentFormat, ProfileStatus, ValidationSeverity
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from sbom_validator.network import configure_network_timeout
 
@@ -47,7 +48,7 @@ DEFAULT_SBOM_PATTERN = "*.{spdx,cdx}.json"
 
 
 MAX_PATTERN_EXPANSIONS = 1024
-_worker_state: dict[str, SbomCheckEngine] = {}
+_worker_state: dict[str, Any] = {}
 
 
 def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
@@ -61,8 +62,9 @@ def _load_config(profile: str, config_path: str | None) -> SbomCheckConfig:
 
 
 def _initialize_worker(sbom_config: SbomCheckConfig) -> None:
-    """Configure network access and create the worker's reusable engine."""
+    """Configure network access and reset the worker's per-batch state."""
     configure_network_timeout()
+    _worker_state["remote_resource_failure"] = None
     _worker_state["engine"] = SbomCheckEngine(sbom_config)
 
 
@@ -158,12 +160,43 @@ def validate_single_file(
     profile: str,
     config_path: str | None,
 ) -> tuple[Path, Any]:
-    """Validate a single SBOM file. Used for parallel processing."""
+    """Validate a file, skipping remote checks after this worker's first outage."""
+    if (
+        failure := _worker_state.get("remote_resource_failure")
+    ) is not None and _is_spdx3_0_1_file(file_path):
+        return file_path, failure
+
     if (engine := _worker_state.get("engine")) is None:
         _initialize_worker(_load_config(profile, config_path))
         engine = _worker_state["engine"]
     result = engine.validate_file(file_path)
+    if _is_spdx3_0_1_remote_failure(result):
+        _worker_state["remote_resource_failure"] = result
     return file_path, result
+
+
+def _is_spdx3_0_1_remote_failure(result: Any) -> bool:
+    """Return whether an SPDX 3.0.1 result reports an unavailable resource."""
+    document_format = getattr(result, "document_format", None)
+    document_format = getattr(document_format, "value", document_format)
+    return (
+        document_format == DocumentFormat.SPDX3.value
+        and getattr(result, "spec_version", None) == "3.0.1"
+        and _has_remote_resource_failure(result)
+    )
+
+
+def _is_spdx3_0_1_file(file_path: Path) -> bool:
+    """Check the declared format before reusing an SPDX 3.0.1 failure result."""
+    try:
+        with file_path.open(encoding="utf-8") as file:
+            document = json.load(file)
+        detected = detect_document(document)
+    except Exception:  # pylint: disable=broad-exception-caught
+        # This is only a fast-path check; let normal validation report failures.
+        return False
+
+    return detected.format is DocumentFormat.SPDX3 and detected.spec_version == "3.0.1"
 
 
 def _has_remote_resource_failure(result: Any) -> bool:
@@ -317,7 +350,8 @@ def output_json_multiple(results: list[tuple[Path, Any]]) -> None:
     help="Validate a configuration file",
 )
 @click.version_option(version=__version__, prog_name="sbom-check")
-def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements # noqa: PLR0917,RUF100
+# pylint: disable=too-many-positional-arguments,too-many-locals,too-many-statements
+def main(  # noqa: PLR0917,RUF100
     paths: tuple[str, ...],
     profile: str,
     config: str | None,
@@ -372,13 +406,9 @@ def main(  # pylint: disable=too-many-positional-arguments,too-many-locals,too-m
         if len(files_to_validate) == 1:
             # Single file - no need for parallel processing
             file_path = files_to_validate[0]
-
-            configure_network_timeout()
             sbom_config = _load_config(profile, config)
-
-            # Detection and validator selection are owned by SbomCheckEngine.
-            engine = SbomCheckEngine(sbom_config)
-            result = engine.validate_file(file_path)
+            _initialize_worker(sbom_config)
+            _, result = validate_single_file(file_path, profile, config)
             results.append((file_path, result))
 
             if not result.overall_valid:
