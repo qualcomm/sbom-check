@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from sbom_check.models import ValidationSeverity
 
 
 class ConfigMetadata(BaseModel):
@@ -164,12 +166,82 @@ class CustomRule(BaseModel):
     max_age_days: int | None = None
 
 
+class CompletenessCheckRule(BaseModel):
+    """Per-rule configuration for a Qualcomm completeness check.
+
+    Controls whether a given completeness rule (identified elsewhere by
+    ``rule_id``) is enabled, how loud its findings are reported, which
+    SPDX document versions it applies to, and whether it has an
+    approved implementation/mapping at all.
+    """
+
+    enabled: bool = True
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    spdx_versions: list[str] = Field(default_factory=lambda: ["2.3", "3.0.1"])
+    description: str | None = None
+    remediation: str | None = None
+    # Set False for a rule that is defined (has a rule_id and config entry)
+    # but has no implementation/approved mapping for the applicable
+    # document version. A rule with supported=False that is otherwise
+    # enabled and applicable to the document's spec version must produce
+    # RuleOutcome.UNSUPPORTED rather than being silently skipped: an
+    # unsupported-but-applicable rule fails closed so a document is never
+    # reported as complete when a required check never actually ran.
+    supported: bool = True
+
+    def applies_to_version(self, spec_version: str | None) -> bool:
+        """Check whether this rule applies to a given SPDX document version.
+
+        Args:
+            spec_version: The bare SPDX specification version of the
+                document being validated (e.g. ``"2.3"`` or ``"3.0.1"``),
+                or None if unknown.
+
+        Returns:
+            bool: True when ``spec_version`` is not None and is present
+            in ``spdx_versions``.
+        """
+        return spec_version is not None and spec_version in self.spdx_versions
+
+
 class ComplianceRequirementsConfig(BaseModel):
     """Configuration for compliance and quality requirements."""
 
     spdx_validation: SpdxValidationConfig = Field(default_factory=SpdxValidationConfig)
-    completeness_checks: dict[str, bool] = Field(default_factory=dict)
+    completeness_checks: dict[str, CompletenessCheckRule] = Field(default_factory=dict)
     quality_assurance: dict[str, bool] = Field(default_factory=dict)
+
+    @field_validator("completeness_checks", mode="before")
+    @classmethod
+    def _coerce_legacy_completeness_checks(cls, value: Any) -> Any:
+        """Coerce legacy boolean completeness-check entries to rule objects.
+
+        Existing configuration files in the wild use the legacy shape
+        ``{"require_x": true}``, where the value is a plain bool meaning
+        "enabled". This normalizes any bool value in the mapping to
+        ``CompletenessCheckRule(enabled=<bool>)`` before standard
+        validation runs, so legacy config files keep loading unchanged.
+        Non-bool values (e.g. already-structured dicts) pass through
+        untouched.
+
+        Args:
+            value: The raw ``completeness_checks`` mapping as parsed from
+                configuration input.
+
+        Returns:
+            Any: The mapping with any bool values replaced by
+            ``CompletenessCheckRule`` instances; non-dict input is
+            returned unchanged.
+        """
+        if not isinstance(value, dict):
+            return value
+        coerced: dict[str, Any] = {}
+        for key, entry in value.items():
+            if isinstance(entry, bool):
+                coerced[key] = CompletenessCheckRule(enabled=entry)
+            else:
+                coerced[key] = entry
+        return coerced
 
 
 class ReportingConfig(BaseModel):

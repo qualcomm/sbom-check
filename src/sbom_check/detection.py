@@ -9,13 +9,18 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from sbom_check.models import DocumentFormat
+from sbom_validator.engine import ValidatorEngine
 
 if TYPE_CHECKING:
-    from sbom_validator.engine import ValidatorEngine
+    from pathlib import Path
 
 
 SUPPORTED_CYCLONEDX_VERSIONS = frozenset({"1.3", "1.4", "1.5", "1.6", "1.7"})
 MINIMUM_CYCLONEDX_VERSION = "1.3"
+
+SPDX3_CONTEXT_PREFIX = "https://spdx.org/rdf/3."
+SPDX3_SUPPORTED_VERSION = "3.0.1"
+_SPDX3_CONTEXT_ROOT = "https://spdx.org/rdf/"
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,27 +61,34 @@ def detect_document(data: Any) -> DetectedDocument:
             "Unsupported input: the JSON document must be a top-level object"
         )
 
+    # "creationInfo" and "dataLicense" are valid property names in BOTH
+    # SPDX 2.3 and SPDX 3.0.1, so they cannot be used to identify SPDX 2
+    # specifically. Only markers unique to the SPDX 2.x tag-value-derived
+    # JSON shape are used here.
     has_spdx_marker = any(
-        marker in data
-        for marker in (
-            "SPDXID",
-            "documentNamespace",
-            "creationInfo",
-            "dataLicense",
-            "spdxVersion",
-        )
+        marker in data for marker in ("SPDXID", "documentNamespace", "spdxVersion")
     )
+    has_spdx3_marker = _has_spdx3_context_marker(data.get("@context"))
     has_cyclonedx_marker = "bomFormat" in data
 
-    if has_spdx_marker and has_cyclonedx_marker:
+    if (has_spdx_marker or has_spdx3_marker) and has_cyclonedx_marker:
         raise UnsupportedDocumentError(
             "Unsupported input: document contains conflicting SPDX and "
             "CycloneDX format markers",
             rule_id="unsupported_format",
         )
 
+    if has_spdx3_marker and has_spdx_marker:
+        raise UnsupportedDocumentError(
+            "Conflicting SPDX 2 and SPDX 3 format markers",
+            rule_id="conflicting_format_markers",
+        )
+
     if has_cyclonedx_marker:
         return _detect_cyclonedx(data)
+
+    if has_spdx3_marker:
+        return _detect_spdx3(data)
 
     if has_spdx_marker:
         return _detect_spdx(data)
@@ -85,6 +97,18 @@ def detect_document(data: Any) -> DetectedDocument:
         "Unsupported input: document does not declare SPDX or CycloneDX format",
         rule_id="unsupported_format",
     )
+
+
+def _has_spdx3_context_marker(context: Any) -> bool:
+    """Return whether a JSON-LD ``@context`` value carries an SPDX 3 marker."""
+    if isinstance(context, str):
+        return context.startswith(SPDX3_CONTEXT_PREFIX)
+    if isinstance(context, list):
+        return any(
+            isinstance(item, str) and item.startswith(SPDX3_CONTEXT_PREFIX)
+            for item in context
+        )
+    return False
 
 
 def _detect_spdx(data: dict[str, Any]) -> DetectedDocument:
@@ -98,6 +122,50 @@ def _detect_spdx(data: dict[str, Any]) -> DetectedDocument:
 
     validator_class = ValidationEngine
     return DetectedDocument(DocumentFormat.SPDX, spec_version, validator_class)
+
+
+def _detect_spdx3_version(data: dict[str, Any]) -> str:
+    if (context := data.get("@context")) is None:
+        raise UnsupportedDocumentError(
+            "The SPDX 3 document is missing the required @context.",
+            rule_id="spdx3_missing_context",
+        )
+
+    if isinstance(context, list):
+        raise UnsupportedDocumentError(
+            "Unsupported SPDX 3 input: array-valued '@context' is not "
+            "supported by the underlying validator",
+            rule_id="unsupported_spdx3_context_form",
+        )
+
+    if not isinstance(context, str):
+        raise UnsupportedDocumentError(
+            "Unsupported SPDX 3 input: '@context' must be a string",
+            rule_id="unsupported_spdx3_context_form",
+        )
+
+    if not context.startswith(SPDX3_CONTEXT_PREFIX):
+        raise UnsupportedDocumentError(
+            f"Unsupported SPDX 3 context '{context}'",
+            rule_id="unsupported_spdx_version",
+        )
+
+    remainder = context.removeprefix(_SPDX3_CONTEXT_ROOT)
+    if (version := remainder.split("/", 1)[0]) != SPDX3_SUPPORTED_VERSION:
+        raise UnsupportedDocumentError(
+            f"Unsupported SPDX 3 version '{version}'; only "
+            f"{SPDX3_SUPPORTED_VERSION} is supported",
+            rule_id="unsupported_spdx_version",
+        )
+
+    return version
+
+
+def _detect_spdx3(data: dict[str, Any]) -> DetectedDocument:
+    spec_version = _detect_spdx3_version(data)
+    return DetectedDocument(
+        DocumentFormat.SPDX3, spec_version, _UnavailableSpdx3CoreValidator
+    )
 
 
 def _detect_cyclonedx(data: dict[str, Any]) -> DetectedDocument:
@@ -133,6 +201,53 @@ def _detect_cyclonedx(data: dict[str, Any]) -> DetectedDocument:
     return DetectedDocument(DocumentFormat.CYCLONEDX, version, validator_class)
 
 
+@dataclass(frozen=True, slots=True)
+class _UnavailableSpdx3CoreValidatorResult:
+    """Result returned by :class:`_UnavailableSpdx3CoreValidator`."""
+
+    is_valid: bool
+    messages: list[Any]
+
+
+class _UnavailableSpdx3CoreValidator(ValidatorEngine):
+    """Placeholder SPDX 3.0.1 core validator.
+
+    SPDX 3.0.1 **core** (schema/SHACL) validation is out of scope for this
+    change and is delivered separately; this placeholder performs no core
+    validation and deliberately reports no core findings so that Qualcomm
+    **profile** validation can run and report on SPDX 3 documents. It must
+    not be mistaken for real core validation.
+    """
+
+    def __init__(
+        self,
+        _schema_path: str | Path | None = None,
+        _enable_schema_validation: bool = True,
+        _enable_semantic_validation: bool = True,
+    ) -> None:
+        self.format = DocumentFormat.SPDX3
+
+    def validate(
+        self, _document: dict[str, Any], _spec_version: str
+    ) -> _UnavailableSpdx3CoreValidatorResult:
+        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+
+    def validate_json_string(
+        self, _json_string: str
+    ) -> _UnavailableSpdx3CoreValidatorResult:
+        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+
+    def validate_dict(
+        self, _document: dict[str, Any]
+    ) -> _UnavailableSpdx3CoreValidatorResult:
+        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+
+    def validate_file(
+        self, _file_path: str | Path
+    ) -> _UnavailableSpdx3CoreValidatorResult:
+        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+
+
 def _is_older_cyclonedx_version(version: str) -> bool:
     """Return whether a well-formed CycloneDX version is below 1.3."""
     try:
@@ -144,6 +259,8 @@ def _is_older_cyclonedx_version(version: str) -> bool:
 
 __all__ = [
     "MINIMUM_CYCLONEDX_VERSION",
+    "SPDX3_CONTEXT_PREFIX",
+    "SPDX3_SUPPORTED_VERSION",
     "SUPPORTED_CYCLONEDX_VERSIONS",
     "DetectedDocument",
     "DocumentFormat",

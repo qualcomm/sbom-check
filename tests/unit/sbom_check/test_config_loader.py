@@ -4,9 +4,11 @@
 """Unit tests for configuration loader."""
 
 import pytest
+from pydantic import ValidationError
 
 from sbom_check.config.loader import ConfigLoader
-from sbom_check.config.models import SbomCheckConfig
+from sbom_check.config.models import CompletenessCheckRule, SbomCheckConfig
+from sbom_check.models import ValidationSeverity
 
 
 def test_config_loader_initialization():
@@ -154,3 +156,127 @@ def test_load_with_profile_and_overrides():
 
     assert config.metadata.name == "Basic SPDX 2.3 Compliance"
     assert config.spdx_validation.require_zero_validation_warnings is True
+
+
+def test_legacy_boolean_true_completeness_check_coerces_to_enabled_rule():
+    """Backward-compat guarantee: legacy {'require_x': true} still loads and coerces
+    to a CompletenessCheckRule with enabled is True."""
+    config = SbomCheckConfig(
+        metadata={"name": "n", "version": "1.0"},
+        compliance_requirements={"completeness_checks": {"require_x": True}},
+    )
+
+    rule = config.compliance_requirements.completeness_checks["require_x"]
+
+    assert isinstance(rule, CompletenessCheckRule)
+    assert rule.enabled is True
+
+
+def test_legacy_boolean_false_completeness_check_coerces_to_disabled_rule():
+    """Backward-compat guarantee: legacy {'require_x': false} coerces to enabled is False."""
+    config = SbomCheckConfig(
+        metadata={"name": "n", "version": "1.0"},
+        compliance_requirements={"completeness_checks": {"require_x": False}},
+    )
+
+    rule = config.compliance_requirements.completeness_checks["require_x"]
+
+    assert isinstance(rule, CompletenessCheckRule)
+    assert rule.enabled is False
+
+
+def test_structured_completeness_check_shape_loads_with_all_fields_intact():
+    """The new structured shape loads with severity/spdx_versions/description/
+    remediation intact."""
+    config = SbomCheckConfig(
+        metadata={"name": "n", "version": "1.0"},
+        compliance_requirements={
+            "completeness_checks": {
+                "require_x": {
+                    "enabled": True,
+                    "severity": "WARNING",
+                    "spdx_versions": ["3.0.1"],
+                    "description": "desc",
+                    "remediation": "fix it",
+                    "supported": False,
+                }
+            }
+        },
+    )
+
+    rule = config.compliance_requirements.completeness_checks["require_x"]
+
+    assert rule.severity is ValidationSeverity.WARNING
+    assert rule.spdx_versions == ["3.0.1"]
+    assert rule.description == "desc"
+    assert rule.remediation == "fix it"
+    assert rule.supported is False
+
+
+def test_applies_to_version_true_and_false_cases():
+    """applies_to_version is True only when spec_version is non-None and configured."""
+    rule = CompletenessCheckRule(spdx_versions=["2.3"])
+
+    assert rule.applies_to_version("2.3") is True
+    assert rule.applies_to_version("3.0.1") is False
+    assert rule.applies_to_version(None) is False
+
+
+def test_invalid_severity_string_is_rejected():
+    """An invalid severity string is rejected."""
+    with pytest.raises(ValidationError):
+        CompletenessCheckRule(severity="CRITICAL")
+
+
+@pytest.mark.parametrize("format_type", ["yaml", "json"])
+def test_saved_config_with_severity_can_be_reloaded(tmp_path, format_type):
+    """A saved config containing a severity enum must load back.
+
+    Regression: model_dump() without mode="json" emits ValidationSeverity
+    enum objects, which yaml.dump writes as Python object tags that
+    yaml.safe_load refuses to read, breaking the save/reload round-trip.
+    """
+    config = SbomCheckConfig.model_validate(
+        {
+            "metadata": {"name": "Round Trip", "version": "1.0"},
+            "compliance_requirements": {
+                "completeness_checks": {
+                    "spdx3_completeness.package_supplier": {
+                        "enabled": True,
+                        "severity": "WARNING",
+                        "spdx_versions": ["3.0.1"],
+                        "remediation": "Add a suppliedBy reference.",
+                    }
+                }
+            },
+        }
+    )
+    output_path = tmp_path / f"config.{format_type}"
+    loader = ConfigLoader()
+
+    loader.save_to_file(config, output_path, format_type)
+    reloaded = loader.load_from_file(output_path)
+
+    rule = reloaded.compliance_requirements.completeness_checks[
+        "spdx3_completeness.package_supplier"
+    ]
+    assert rule.severity is ValidationSeverity.WARNING
+    assert rule.spdx_versions == ["3.0.1"]
+    assert rule.remediation == "Add a suppliedBy reference."
+
+
+def test_saved_config_contains_no_python_object_tags(tmp_path):
+    """Serialized YAML must be plain data, loadable by any YAML parser."""
+    config = SbomCheckConfig.model_validate(
+        {
+            "metadata": {"name": "Plain", "version": "1.0"},
+            "compliance_requirements": {
+                "completeness_checks": {"check": {"severity": "INFO"}}
+            },
+        }
+    )
+    output_path = tmp_path / "config.yaml"
+
+    ConfigLoader().save_to_file(config, output_path)
+
+    assert "python/object" not in output_path.read_text(encoding="utf-8")

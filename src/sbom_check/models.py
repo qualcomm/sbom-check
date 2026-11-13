@@ -24,6 +24,7 @@ class DocumentFormat(str, Enum):
     """Supported SBOM document formats."""
 
     SPDX = "SPDX"
+    SPDX3 = "SPDX3"
     CYCLONEDX = "CycloneDX"
     UNKNOWN = "unknown"
 
@@ -34,6 +35,24 @@ class ProfileStatus(str, Enum):
     PASSED = "passed"
     FAILED = "failed"
     NOT_APPLICABLE = "not_applicable"
+    SKIPPED = "skipped"
+    UNSUPPORTED = "unsupported"
+
+
+class RuleOutcome(str, Enum):
+    """Outcome of attempting to evaluate a single completeness rule.
+
+    ``UNSUPPORTED`` means the rule has no mapping for the document's
+    version or could not be evaluated at all. It must never be treated
+    as a pass: a document cannot be reported as complete when a
+    required rule never actually ran.
+    """
+
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    NOT_APPLICABLE = "not_applicable"
+    UNSUPPORTED = "unsupported"
 
 
 class ValidationMessage(BaseModel):
@@ -88,6 +107,30 @@ class ValidationSummary(BaseModel):
         return (self.passed_rules / self.total_rules) * 100
 
 
+class RuleCoverage(BaseModel):
+    """Record of whether and how a single completeness rule was executed."""
+
+    rule_id: str
+    outcome: RuleOutcome
+    severity: ValidationSeverity | None = None
+    description: str | None = None
+    reason: str | None = None
+
+    @property
+    def blocks_completeness(self) -> bool:
+        """Return whether this entry must prevent a document from passing as complete.
+
+        An ``UNSUPPORTED`` outcome means a required rule was never
+        actually evaluated. Such a rule must fail closed rather than be
+        silently ignored, otherwise a document could be reported as
+        "complete" when a required completeness check never ran.
+
+        Returns:
+            bool: True when ``outcome`` is ``RuleOutcome.UNSUPPORTED``.
+        """
+        return self.outcome is RuleOutcome.UNSUPPORTED
+
+
 class SbomCheckResult(BaseModel):
     """Complete validation result combining core validation and profile results."""
 
@@ -102,6 +145,7 @@ class SbomCheckResult(BaseModel):
     file_path: str | None = None
     document_format: DocumentFormat = DocumentFormat.UNKNOWN
     spec_version: str | None = None
+    rule_coverage: list[RuleCoverage] = Field(default_factory=list)
 
     @classmethod
     def combine(  # pylint: disable=too-many-positional-arguments,too-many-locals  # noqa: PLR0917,RUF100
@@ -114,10 +158,35 @@ class SbomCheckResult(BaseModel):
         spec_version: str | None = "2.3",
         *,
         spdx_result: Any = None,
+        profile_rule_coverage: list[RuleCoverage] | None = None,
     ) -> SbomCheckResult:
         """Combine core validation result with profile validation result.
 
         ``spdx_result`` is deprecated; use ``core_result`` instead.
+
+        Args:
+            core_result: Result object from the core validator, exposing
+                ``is_valid`` and ``messages``.
+            profile_result: Previously combined profile validation result,
+                if any.
+            profile_name: Name of the profile that was applied.
+            file_path: Path of the document that was validated.
+            document_format: Format of the document that was validated.
+            spec_version: Specification version of the document.
+            spdx_result: Deprecated alias for ``core_result``.
+            profile_rule_coverage: Execution records for individual
+                completeness rules evaluated for this document. Any entry
+                whose ``blocks_completeness`` is True (i.e. an
+                ``UNSUPPORTED`` outcome) forces ``overall_valid`` to False
+                and, when the profile would otherwise be ``PASSED``,
+                downgrades ``profile_status`` to ``SKIPPED``.
+
+        Returns:
+            SbomCheckResult: The combined validation result.
+
+        Raises:
+            TypeError: If both or neither of ``core_result`` and
+                ``spdx_result`` are provided.
         """
         if core_result is not None and spdx_result is not None:
             raise TypeError("Pass either core_result or spdx_result, not both")
@@ -138,15 +207,23 @@ class SbomCheckResult(BaseModel):
         # Calculate summary statistics
         summary = cls._calculate_summary(messages)
 
+        rule_coverage = profile_rule_coverage or []
+        has_unevaluated_rules = any(
+            coverage.blocks_completeness for coverage in rule_coverage
+        )
+
         # Determine validity
         core_valid = getattr(core_result, "is_valid", False)
-        is_spdx_document = document_format is DocumentFormat.SPDX
+        is_spdx_document = document_format in (
+            DocumentFormat.SPDX,
+            DocumentFormat.SPDX3,
+        )
         spdx_valid = core_valid if is_spdx_document else None
         profile_valid: bool | None
         if is_spdx_document:
             profile_valid = profile_result.overall_valid if profile_result else True
-            profile_status = (
-                ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
+            profile_status = cls._resolve_profile_status(
+                profile_valid, has_unevaluated_rules
             )
         else:
             profile_valid = profile_result.overall_valid if profile_result else None
@@ -155,6 +232,7 @@ class SbomCheckResult(BaseModel):
             core_valid
             and (profile_result is None or profile_result.overall_valid)
             and summary.errors == 0
+            and not has_unevaluated_rules
         )
         return cls(
             overall_valid=overall_valid,
@@ -168,7 +246,29 @@ class SbomCheckResult(BaseModel):
             file_path=file_path,
             document_format=document_format,
             spec_version=spec_version,
+            rule_coverage=rule_coverage,
         )
+
+    @classmethod
+    def _resolve_profile_status(
+        cls, profile_valid: bool, has_unevaluated_rules: bool
+    ) -> ProfileStatus:
+        """Resolve the profile status for an SPDX document.
+
+        Args:
+            profile_valid: Whether the profile result (if any) was valid.
+            has_unevaluated_rules: Whether any required rule was never
+                actually evaluated, in which case the profile must not
+                be reported as PASSED.
+
+        Returns:
+            ProfileStatus: SKIPPED when a required rule was never
+            evaluated, otherwise PASSED or FAILED based on
+            ``profile_valid``.
+        """
+        if has_unevaluated_rules and profile_valid:
+            return ProfileStatus.SKIPPED
+        return ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
 
     @classmethod
     def _convert_validation_messages(cls, core_result: Any) -> list[ValidationMessage]:
@@ -193,7 +293,9 @@ class SbomCheckResult(BaseModel):
                     severity=severity_level,
                     message=raw_message.message,
                     rule_id=getattr(raw_message, "rule_id", None),
-                    field_path=getattr(raw_message, "field_path", getattr(raw_message, "path", None)),
+                    field_path=getattr(
+                        raw_message, "field_path", getattr(raw_message, "path", None)
+                    ),
                 )
                 messages.append(converted_message)
 
@@ -292,3 +394,46 @@ class SbomCheckResult(BaseModel):
     def has_warnings(self) -> bool:
         """Check if the result contains any warning messages."""
         return self.summary.warnings > 0
+
+    def rules_by_outcome(self, outcome: RuleOutcome) -> list[RuleCoverage]:
+        """Get all rule coverage entries with a specific outcome.
+
+        Args:
+            outcome: The outcome to filter by.
+
+        Returns:
+            list[RuleCoverage]: Coverage entries matching ``outcome``.
+        """
+        return [
+            coverage for coverage in self.rule_coverage if coverage.outcome == outcome
+        ]
+
+    def has_unevaluated_rules(self) -> bool:
+        """Check whether any required rule was never actually evaluated.
+
+        Returns:
+            bool: True if any coverage entry has ``blocks_completeness``
+            set, meaning a required rule could not be evaluated and the
+            document must not be reported as complete.
+        """
+        return any(coverage.blocks_completeness for coverage in self.rule_coverage)
+
+    def add_rule_coverage(self, coverage: RuleCoverage) -> None:
+        """Add a rule coverage entry to the result.
+
+        If the appended coverage blocks completeness (an unevaluated
+        required rule), this fails closed: ``overall_valid`` is set to
+        False, and if ``profile_status`` is currently ``PASSED`` it is
+        downgraded to ``SKIPPED``. ``profile_valid`` is left untouched.
+
+        Args:
+            coverage: The rule coverage entry to record.
+        """
+        coverage_list = list(self.rule_coverage)
+        coverage_list.append(coverage)
+        self.rule_coverage = coverage_list
+
+        if coverage.blocks_completeness:
+            self.overall_valid = False
+            if self.profile_status is ProfileStatus.PASSED:
+                self.profile_status = ProfileStatus.SKIPPED
