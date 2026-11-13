@@ -148,7 +148,11 @@ class ConfigLoader:
             ValueError: If format_type is not supported
         """
         output_path = Path(output_path)
-        config_data = config.model_dump(exclude_none=True)
+        # mode="json" renders enum values (for example completeness-check
+        # severities) as plain strings. A plain model_dump() emits enum
+        # objects, which yaml.dump writes as Python object tags that
+        # yaml.safe_load then refuses to read back.
+        config_data = config.model_dump(exclude_none=True, mode="json")
 
         with output_path.open("w", encoding="utf-8") as f:
             if format_type.lower() == "yaml":
@@ -179,7 +183,7 @@ class ConfigLoader:
             YAML configuration template as string
         """
         config = self.load_profile(profile_name)
-        config_data = config.model_dump(exclude_none=True)
+        config_data = config.model_dump(exclude_none=True, mode="json")
 
         if include_comments:
             # Add comments to explain configuration sections

@@ -1,0 +1,75 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://qualcomm.example/spdx/doc-complete",
+      "name": "complete-example",
+      "creationInfo": "_:creationInfo",
+      "dataLicense": "https://spdx.org/licenses/CC0-1.0",
+      "rootElement": ["https://qualcomm.example/spdx/pkg/libwidget"]
+    },
+    {
+      "@id": "_:creationInfo",
+      "type": "CreationInfo",
+      "specVersion": "3.0.1",
+      "created": "2026-01-15T00:00:00Z",
+      "createdBy": ["https://qualcomm.example/spdx/agent/acme-corp"]
+    },
+    {
+      "type": "Organization",
+      "spdxId": "https://qualcomm.example/spdx/agent/acme-corp",
+      "name": "ACME Corporation",
+      "creationInfo": "_:creationInfo"
+    },
+    {
+      "type": "software_Package",
+      "spdxId": "https://qualcomm.example/spdx/pkg/libwidget",
+      "name": "libwidget",
+      "creationInfo": "_:creationInfo",
+      "software_packageVersion": "2.4.1",
+      "software_downloadLocation": "https://qualcomm.example/dist/libwidget-2.4.1.tar.gz",
+      "software_homePage": "https://qualcomm.example/libwidget",
+      "software_copyrightText": "Copyright (c) 2026 ACME Corporation",
+      "software_packageUrl": "pkg:generic/libwidget@2.4.1",
+      "suppliedBy": "https://qualcomm.example/spdx/agent/acme-corp",
+      "externalIdentifier": [
+        {
+          "type": "ExternalIdentifier",
+          "externalIdentifierType": "packageUrl",
+          "identifier": "pkg:generic/libwidget@2.4.1"
+        }
+      ]
+    },
+    {
+      "type": "simplelicensing_LicenseExpression",
+      "spdxId": "https://qualcomm.example/spdx/license/apache",
+      "creationInfo": "_:creationInfo",
+      "simplelicensing_licenseExpression": "Apache-2.0"
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://qualcomm.example/spdx/rel/describes",
+      "creationInfo": "_:creationInfo",
+      "from": "https://qualcomm.example/spdx/doc-complete",
+      "relationshipType": "describes",
+      "to": ["https://qualcomm.example/spdx/pkg/libwidget"]
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://qualcomm.example/spdx/rel/concluded",
+      "creationInfo": "_:creationInfo",
+      "from": "https://qualcomm.example/spdx/pkg/libwidget",
+      "relationshipType": "hasConcludedLicense",
+      "to": ["https://qualcomm.example/spdx/license/apache"]
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://qualcomm.example/spdx/rel/declared",
+      "creationInfo": "_:creationInfo",
+      "from": "https://qualcomm.example/spdx/pkg/libwidget",
+      "relationshipType": "hasDeclaredLicense",
+      "to": ["https://qualcomm.example/spdx/license/apache"]
+    }
+  ]
+}

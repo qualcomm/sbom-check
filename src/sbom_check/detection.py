@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from sbom_check.models import DocumentFormat
+from sbom_check.models import DocumentFormat, ValidationSeverity
 from sbom_validator.engine import ValidatorEngine
 
 if TYPE_CHECKING:
@@ -201,6 +201,25 @@ def _detect_cyclonedx(data: dict[str, Any]) -> DetectedDocument:
     return DetectedDocument(DocumentFormat.CYCLONEDX, version, validator_class)
 
 
+SPDX3_CORE_VALIDATION_UNAVAILABLE_RULE_ID = "spdx3_core_validation_unavailable"
+
+
+@dataclass(frozen=True, slots=True)
+class _Spdx3CoreValidationUnavailableMessage:
+    """Message reporting that SPDX 3 core validation could not run."""
+
+    severity: ValidationSeverity = ValidationSeverity.ERROR
+    message: str = (
+        "SPDX 3.0.1 core validation is not available in this build, so the "
+        "document could not be checked against the SPDX 3.0.1 specification."
+    )
+    rule_id: str = SPDX3_CORE_VALIDATION_UNAVAILABLE_RULE_ID
+    remediation: str = (
+        "Validate SPDX 3.0.1 conformance with a tool that implements the "
+        "SPDX 3.0.1 schema and SHACL checks."
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _UnavailableSpdx3CoreValidatorResult:
     """Result returned by :class:`_UnavailableSpdx3CoreValidator`."""
@@ -210,13 +229,13 @@ class _UnavailableSpdx3CoreValidatorResult:
 
 
 class _UnavailableSpdx3CoreValidator(ValidatorEngine):
-    """Placeholder SPDX 3.0.1 core validator.
+    """Placeholder standing in for the SPDX 3.0.1 core validator.
 
-    SPDX 3.0.1 **core** (schema/SHACL) validation is out of scope for this
-    change and is delivered separately; this placeholder performs no core
-    validation and deliberately reports no core findings so that Qualcomm
-    **profile** validation can run and report on SPDX 3 documents. It must
-    not be mistaken for real core validation.
+    SPDX 3.0.1 core (schema/SHACL) validation is out of scope for this
+    change and is delivered separately. This placeholder performs no core
+    validation and reports that fact as an error, so that Qualcomm profile
+    validation can still run against SPDX 3 documents without the document
+    appearing to have passed SPDX 3.0.1 conformance checks that never ran.
     """
 
     def __init__(
@@ -230,22 +249,37 @@ class _UnavailableSpdx3CoreValidator(ValidatorEngine):
     def validate(
         self, _document: dict[str, Any], _spec_version: str
     ) -> _UnavailableSpdx3CoreValidatorResult:
-        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+        return self._unavailable()
 
     def validate_json_string(
         self, _json_string: str
     ) -> _UnavailableSpdx3CoreValidatorResult:
-        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+        return self._unavailable()
 
     def validate_dict(
         self, _document: dict[str, Any]
     ) -> _UnavailableSpdx3CoreValidatorResult:
-        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+        return self._unavailable()
 
     def validate_file(
         self, _file_path: str | Path
     ) -> _UnavailableSpdx3CoreValidatorResult:
-        return _UnavailableSpdx3CoreValidatorResult(is_valid=True, messages=[])
+        return self._unavailable()
+
+    @staticmethod
+    def _unavailable() -> _UnavailableSpdx3CoreValidatorResult:
+        """Report that SPDX 3 core validation did not run.
+
+        Returns:
+            _UnavailableSpdx3CoreValidatorResult: An invalid result
+            carrying one message explaining that core validation was
+            unavailable. Reporting ``is_valid=True`` here would let an
+            SPDX 3 document pass as conformant when nothing was checked.
+        """
+        return _UnavailableSpdx3CoreValidatorResult(
+            is_valid=False,
+            messages=[_Spdx3CoreValidationUnavailableMessage()],
+        )
 
 
 def _is_older_cyclonedx_version(version: str) -> bool:
@@ -260,6 +294,7 @@ def _is_older_cyclonedx_version(version: str) -> bool:
 __all__ = [
     "MINIMUM_CYCLONEDX_VERSION",
     "SPDX3_CONTEXT_PREFIX",
+    "SPDX3_CORE_VALIDATION_UNAVAILABLE_RULE_ID",
     "SPDX3_SUPPORTED_VERSION",
     "SUPPORTED_CYCLONEDX_VERSIONS",
     "DetectedDocument",

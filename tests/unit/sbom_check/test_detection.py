@@ -190,16 +190,24 @@ def test_reject_non_spdx_context_string_with_no_other_markers() -> None:
         detect_document({"@context": "https://example.com/ctx.jsonld"})
 
 
-def test_unavailable_spdx3_core_validator_placeholder() -> None:
+def test_unavailable_spdx3_core_validator_reports_that_it_did_not_run() -> None:
+    """The placeholder must not report an unchecked document as valid.
+
+    Returning is_valid=True would let an SPDX 3 document pass as SPDX
+    3.0.1-conformant when no core validation ran at all.
+    """
     from sbom_check.detection import (  # noqa: PLC0415
+        SPDX3_CORE_VALIDATION_UNAVAILABLE_RULE_ID,
         _UnavailableSpdx3CoreValidator,  # pylint: disable=import-outside-toplevel
     )
 
     validator = _UnavailableSpdx3CoreValidator()
     result = validator.validate_dict({})
 
-    assert result.is_valid is True
-    assert result.messages == []
+    assert result.is_valid is False
+    assert len(result.messages) == 1
+    assert result.messages[0].rule_id == SPDX3_CORE_VALIDATION_UNAVAILABLE_RULE_ID
+    assert result.messages[0].remediation
 
 
 def test_reject_conflicting_spdx3_and_cyclonedx_markers() -> None:

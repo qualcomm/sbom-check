@@ -15,6 +15,8 @@ from sbom_check.detection import UnsupportedDocumentError, detect_document
 from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
+    RuleCoverage,
+    RuleOutcome,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
@@ -178,15 +180,14 @@ class SbomCheckEngine:
             if self._engine_override is not None or self._validator_class is not None
             else self._get_engine(detected.validator_class)
         )
-        profile_applicable = detected.format is DocumentFormat.SPDX
-
         # Run the selected format engine.
         core_result = selected_engine.validate_dict(sbom_data)
 
-        # The completeness profile is SPDX-specific.
+        # The SPDX 2.3 profile rules read SPDX 2.3 JSON field paths and
+        # cannot be applied to the SPDX 3.0.1 object model.
         profile_result = (
             self._validate_profile_requirements(sbom_data)
-            if profile_applicable
+            if detected.format is DocumentFormat.SPDX
             else None
         )
 
@@ -198,9 +199,44 @@ class SbomCheckEngine:
             file_path=file_path,
             document_format=detected.format,
             spec_version=detected.spec_version,
+            profile_rule_coverage=self._profile_rule_coverage(detected.format),
         )
 
         return combined_result
+
+    @staticmethod
+    def _profile_rule_coverage(
+        document_format: DocumentFormat,
+    ) -> list[RuleCoverage] | None:
+        """Report coverage for profile rules that could not be evaluated.
+
+        SPDX 3.0.1 Qualcomm completeness rules are not implemented yet.
+        Reporting no coverage would let an SPDX 3 document appear to have
+        passed profile validation when no rule ran at all, so the gap is
+        recorded explicitly as unsupported and fails closed.
+
+        Args:
+            document_format: Detected format of the document.
+
+        Returns:
+            list[RuleCoverage] | None: One unsupported entry for SPDX 3
+            documents, otherwise None.
+        """
+        if document_format is not DocumentFormat.SPDX3:
+            return None
+
+        return [
+            RuleCoverage(
+                rule_id="spdx3_completeness",
+                outcome=RuleOutcome.UNSUPPORTED,
+                description="Qualcomm SPDX 3.0.1 completeness profile",
+                reason=(
+                    "Qualcomm completeness rules for SPDX 3.0.1 are not "
+                    "implemented yet, so this document was not checked "
+                    "against the Qualcomm profile."
+                ),
+            )
+        ]
 
     def _unsupported_result(
         self, error: UnsupportedDocumentError, file_path: str | None = None

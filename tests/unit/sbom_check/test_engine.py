@@ -5,6 +5,7 @@
 
 import json
 from copy import deepcopy
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -710,3 +711,86 @@ def test_explicit_validator_returns_structured_result_for_non_object_input():
     assert result.document_format == "unknown"
     assert result.core_valid is False
     assert result.messages[0].rule_id == "unsupported_format"
+
+
+SPDX3_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "spdx3" / "complete.spdx.json"
+)
+
+
+def _spdx3_document():
+    """Load the SPDX 3.0.1 fixture document."""
+    return json.loads(SPDX3_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_spdx3_document_does_not_pass_without_being_validated():
+    """An SPDX 3 document must never report as valid while unchecked.
+
+    SPDX 3.0.1 core validation and the Qualcomm SPDX 3.0.1 completeness
+    rules are both unimplemented. The document must therefore fail closed
+    rather than pass because nothing ran.
+    """
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    assert result.document_format is DocumentFormat.SPDX3
+    assert result.spec_version == "3.0.1"
+    assert result.overall_valid is False
+    assert result.core_valid is False
+    assert result.profile_status is not ProfileStatus.PASSED
+
+
+def test_spdx3_profile_is_reported_skipped_not_failed():
+    """A profile that could not run is skipped, not failed."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    assert result.profile_status is ProfileStatus.SKIPPED
+    assert result.has_unevaluated_rules() is True
+
+
+def test_spdx3_records_why_the_profile_did_not_run():
+    """Coverage must name the unevaluated profile and explain why."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    unevaluated = [entry for entry in result.rule_coverage if entry.blocks_completeness]
+    assert len(unevaluated) == 1
+    assert unevaluated[0].rule_id == "spdx3_completeness"
+    assert "not implemented yet" in (unevaluated[0].reason or "")
+
+
+def test_spdx3_reports_core_validation_unavailable():
+    """The unavailable SPDX 3 core validator must be visible in messages."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    rule_ids = {message.rule_id for message in result.messages}
+    assert "spdx3_core_validation_unavailable" in rule_ids
+
+
+def test_spdx3_does_not_run_spdx2_profile_rules():
+    """SPDX 2.3 field-path rules must not be applied to SPDX 3 documents."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    rule_ids = {message.rule_id for message in result.messages}
+    assert "missing_required_field" not in rule_ids
+    assert "missing_package_field" not in rule_ids
+    assert "missing_describes_relationship" not in rule_ids
+
+
+def test_spdx2_profile_is_unaffected_by_spdx3_support():
+    """SPDX 2.3 documents keep reporting no rule coverage."""
+    document = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "Test",
+        "documentNamespace": "https://example.com/test",
+        "creationInfo": {
+            "created": "2023-01-01T00:00:00Z",
+            "creators": ["Tool: test"],
+        },
+    }
+
+    result = SbomCheckEngine().validate_dict(document)
+
+    assert result.document_format is DocumentFormat.SPDX
+    assert result.rule_coverage == []
+    assert result.has_unevaluated_rules() is False
