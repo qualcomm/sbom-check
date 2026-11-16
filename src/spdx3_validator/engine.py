@@ -4,6 +4,8 @@
 """SPDX 3.0.1 validation engine."""
 
 import json
+from copy import deepcopy
+from dataclasses import dataclass
 from http.client import HTTPException
 from json import JSONDecodeError
 from pathlib import Path
@@ -37,6 +39,23 @@ from spdx3_validator.resources import (
     ValidationResources,
     load_validation_resources,
 )
+
+
+@dataclass
+class _RemoteFailureState:
+    """Process-local opt-in and cached result for remote resource failures."""
+
+    reuse_enabled: bool = False
+    failure: ValidationResult | None = None
+
+
+_remote_failure_state = _RemoteFailureState()
+
+
+def enable_remote_failure_reuse() -> None:
+    """Enable per-process reuse of remote resource failures and clear old state."""
+    _remote_failure_state.reuse_enabled = True
+    _remote_failure_state.failure = None
 
 
 class _ResourceLoadError(Exception):
@@ -134,6 +153,8 @@ class ValidationEngine(ValidatorEngine):
             validation_data = parsed_document.data
             source = parsed_document.source
         else:
+            # validate_dict() rejects these contexts first; mirror upstream
+            # Document.from_text() defensively for internal callers.
             if "@context" not in document:
                 raise SpdxValidateError("No @context found in document")
             if find_version(document["@context"]) is None:
@@ -150,8 +171,6 @@ class ValidationEngine(ValidatorEngine):
             )
         except requests.RequestException:
             # Preserve requests details for the richer diagnostics in _validate.
-            raise
-        except SpdxValidateError:
             raise
         except Exception as resource_error:
             raise _ResourceLoadError from resource_error
@@ -243,11 +262,27 @@ class ValidationEngine(ValidatorEngine):
             semantic_valid=None,
         )
 
-    def _validate(  # pylint: disable=too-many-return-statements,too-many-branches  # noqa: PLR0911
+    def _validate(self, document: dict[str, Any]) -> ValidationResult:
+        """Validate after local checks, reusing a worker's remote outage if enabled."""
+        if (
+            _remote_failure_state.reuse_enabled
+            and _remote_failure_state.failure is not None
+        ):
+            return deepcopy(_remote_failure_state.failure)
+
+        result = self._validate_once(document)
+        if _remote_failure_state.reuse_enabled and any(
+            message.rule_id == REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+            for message in result.messages
+        ):
+            _remote_failure_state.failure = deepcopy(result)
+        return result
+
+    def _validate_once(  # pylint: disable=too-many-return-statements,too-many-branches  # noqa: PLR0911
         self, document: dict[str, Any]
     ) -> ValidationResult:
         """
-        Validate SPDX 3.0.1 document.
+        Perform the SPDX 3.0.1 validation and map its exceptions to diagnostics.
 
         Args:
             document: Parsed SPDX 3.0.1 document to validate.
@@ -288,6 +323,8 @@ class ValidationEngine(ValidatorEngine):
         except _ResourceLoadError as e:
             cause = e.__cause__
             detail = type(cause).__name__ if cause is not None else type(e).__name__
+            if isinstance(cause, SpdxValidateError):
+                detail += f": {cause}"
             return ValidationResult(
                 is_valid=False,
                 messages=[

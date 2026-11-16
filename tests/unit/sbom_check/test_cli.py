@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+from urllib.error import URLError
 
 import pytest
 from click.testing import CliRunner
@@ -24,7 +25,6 @@ from sbom_check.cli import (
     main,
 )
 from sbom_check.models import (
-    DocumentFormat,
     ProfileStatus,
     SbomCheckResult,
     ValidationMessage,
@@ -68,7 +68,7 @@ def test_worker_reuses_its_configured_engine() -> None:
             patch("sbom_check.cli.SbomCheckEngine") as engine_class,
         ):
             engine = engine_class.return_value
-            engine.validate_file.return_value = Mock(messages=[])
+            engine.validate_file.return_value = Mock()
 
             sbom_cli._initialize_worker(config)
             sbom_cli.validate_single_file(Path("first.spdx.json"), "default", None)
@@ -79,6 +79,24 @@ def test_worker_reuses_its_configured_engine() -> None:
         assert engine.validate_file.call_count == 2
     finally:
         sbom_cli._worker_state.clear()
+
+
+def test_output_text_multiple_separates_identical_results_by_position():
+    """Keep separators between files even when they share the same result object."""
+    shared_result = Mock(overall_valid=False)
+    results = [
+        (Path("first.spdx.json"), shared_result),
+        (Path("second.spdx.json"), shared_result),
+        (Path("third.spdx.json"), shared_result),
+    ]
+
+    with (
+        patch("sbom_check.cli._print_text_result"),
+        patch("sbom_check.cli.console.print") as console_print,
+    ):
+        sbom_cli.output_text_multiple(results)
+
+    assert sum(not call.args for call in console_print.call_args_list) == 2
 
 
 def test_expand_pattern_supports_multiple_brace_groups():
@@ -350,65 +368,31 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
     assert cli_result.exit_code == 4
 
 
-def test_worker_caches_spdx3_failure_only_for_spdx3_and_resets_between_batches(
-    tmp_path,
-):
-    """Reuse SPDX 3.0.1 outages without skipping other formats or future batches."""
-    spdx3_context = "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"
-    (tmp_path / "first.spdx.json").write_text(
-        json.dumps({"@context": spdx3_context}), encoding="utf-8"
-    )
-    (tmp_path / "second.spdx.json").write_text(
-        json.dumps({"spdxVersion": "SPDX-2.3"}), encoding="utf-8"
-    )
-    (tmp_path / "third.spdx.json").write_text(
-        json.dumps({"@context": spdx3_context}), encoding="utf-8"
-    )
-
-    failure_result = SbomCheckResult(
-        overall_valid=False,
-        spdx_valid=None,
-        profile_valid=None,
-        core_valid=False,
-        document_format=DocumentFormat.SPDX3,
-        spec_version="3.0.1",
-        messages=[
-            ValidationMessage(
-                severity=ValidationSeverity.ERROR,
-                message="remote resource unavailable",
-                rule_id="remote_resource_unavailable",
-            )
-        ],
-    )
-    spdx2_result = SbomCheckResult(
-        overall_valid=True,
-        spdx_valid=True,
-        profile_valid=True,
-        core_valid=True,
-        document_format=DocumentFormat.SPDX,
-        spec_version="2.3",
+def test_cli_engine_reuses_remote_failure_without_masking_local_errors(tmp_path):
+    """Keep non-canonical SPDX 3 contexts local after a remote outage."""
+    valid_document = (
+        Path(__file__).resolve().parents[2] / "fixtures" / "minimal-spdx3.0.1.spdx.json"
+    ).read_text(encoding="utf-8")
+    (tmp_path / "a-first.spdx.json").write_text(valid_document, encoding="utf-8")
+    (tmp_path / "b-second.spdx.json").write_text(valid_document, encoding="utf-8")
+    (tmp_path / "c-noncanonical-context.spdx.json").write_text(
+        json.dumps({"@context": "https://spdx.org/rdf/3.0.1/other.jsonld"}),
+        encoding="utf-8",
     )
 
     with (
         patch("sbom_check.cli.ProcessPoolExecutor", ThreadPoolExecutor),
-        patch("sbom_check.cli.SbomCheckEngine") as engine_class,
-        patch("sbom_check.cli.configure_network_timeout") as configure_timeout,
+        patch(
+            "spdx3_validator.engine.ValidationEngine._validate_document",
+            side_effect=URLError("network disabled"),
+        ) as validate_document,
     ):
-        engine_class.return_value.validate_file.side_effect = [
-            failure_result,
-            spdx2_result,
-            failure_result,
-            spdx2_result,
-        ]
-        first_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
-        second_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+        result = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
 
-    assert first_batch.exit_code == 4
-    assert second_batch.exit_code == 4
-    assert first_batch.output.count("remote resource unavailable") == 2
-    assert second_batch.output.count("remote resource unavailable") == 2
-    assert engine_class.return_value.validate_file.call_count == 4
-    assert configure_timeout.call_count == 2
+    assert result.exit_code == 4
+    assert result.output.count("could not be completed") == 2
+    assert "Unsupported SPDX version" in result.output
+    validate_document.assert_called_once()
 
 
 @patch("spdx3_validator.engine.ValidationEngine._validate_document")

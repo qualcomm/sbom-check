@@ -56,6 +56,11 @@ not itself a profile failure.
   `remote_resource_unavailable`. They set `is_valid` to `false`, but leave
   `schema_valid` and `semantic_valid` as `null` because those checks were not
   evaluated. They are not SBOM content or semantic failures.
+- In multi-file CLI runs, each worker reuses its first SPDX 3 remote-resource
+  failure for subsequent SPDX 3 files assigned to that worker; local input checks
+  still run. A transient timeout can therefore mark multiple files as
+  `remote_resource_unavailable`. Re-run the batch after connectivity or resource
+  availability is restored.
 - Each input file is validated independently; merged or cross-document validation is not supported.
 - An SPDX 3.0.1 document with an empty `@graph` is considered valid by the upstream validator. This is expected upstream behavior, but does not indicate that the document contains any SPDX elements.
 

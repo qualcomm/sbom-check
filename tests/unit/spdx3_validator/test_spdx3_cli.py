@@ -5,11 +5,12 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+from urllib.error import URLError
 
 from click.testing import CliRunner
+from spdx3_validate.core import SpdxValidateError
 
-from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from spdx3_validator.cli import main
 from spdx3_validator.models import (
     ValidationMessage,
@@ -72,40 +73,54 @@ def test_batch_continues_when_one_file_has_structured_input_error(tmp_path):
     assert "spdx3_validation_input_error" in result.output
 
 
-def test_worker_caches_remote_failure_and_resets_for_next_cli_batch(tmp_path):
-    """A worker retries only once, and a new CLI batch starts with clean state."""
-    for name in ("first.spdx.json", "second.spdx.json"):
-        (tmp_path / name).write_text("{}", encoding="utf-8")
-
-    validation_result = ValidationResult(
-        is_valid=False,
-        schema_valid=None,
-        semantic_valid=None,
-        messages=[
-            ValidationMessage(
-                severity=ValidationSeverity.ERROR,
-                message="remote resource unavailable",
-                rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
-            )
-        ],
-    )
+def test_worker_reuses_remote_failure_without_masking_local_errors(tmp_path):
+    """Cache a valid document's outage but still report later local errors."""
+    valid_document = (
+        Path(__file__).resolve().parents[2] / "fixtures" / "minimal-spdx3.0.1.spdx.json"
+    ).read_text(encoding="utf-8")
+    (tmp_path / "a-first.spdx.json").write_text(valid_document, encoding="utf-8")
+    (tmp_path / "b-second.spdx.json").write_text(valid_document, encoding="utf-8")
+    (tmp_path / "c-missing-context.spdx.json").write_text("{}", encoding="utf-8")
 
     with (
         patch("spdx3_validator.cli.ProcessPoolExecutor", ThreadPoolExecutor),
-        patch("spdx3_validator.cli.ValidationEngine") as engine_class,
-        patch("spdx3_validator.cli.configure_network_timeout") as configure_timeout,
+        patch(
+            "spdx3_validator.engine.ValidationEngine._validate_document",
+            side_effect=URLError("network disabled"),
+        ) as validate_document,
     ):
-        engine_class.return_value.validate_file.return_value = validation_result
+        result = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
 
-        first_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
-        second_batch = CliRunner().invoke(main, ["--jobs", "1", str(tmp_path)])
+    assert result.exit_code == 4
+    assert result.output.count("remote_resource_unavailable") == 2
+    assert "spdx3_missing_context" in result.output
+    validate_document.assert_called_once()
 
-    assert first_batch.exit_code == 4
-    assert second_batch.exit_code == 4
-    assert first_batch.output.count(REMOTE_RESOURCE_UNAVAILABLE_RULE_ID) == 2
-    assert second_batch.output.count(REMOTE_RESOURCE_UNAVAILABLE_RULE_ID) == 2
-    assert engine_class.return_value.validate_file.call_count == 2
-    assert configure_timeout.call_count == 2
+
+def test_cli_reports_broken_upstream_schema_as_resource_failure(tmp_path):
+    """A broken upstream schema is an incomplete validation, not bad SBOM data."""
+    document = tmp_path / "document.spdx.json"
+    document.write_text(
+        '{"@context":"https://spdx.org/rdf/3.0.1/spdx-context.jsonld","@graph":[]}',
+        encoding="utf-8",
+    )
+    parsed_document = MagicMock(data={"@graph": []}, source="document")
+
+    with (
+        patch(
+            "spdx3_validator.engine.Document.from_text",
+            return_value=parsed_document,
+        ),
+        patch(
+            "spdx3_validator.engine.load_validation_resources",
+            side_effect=SpdxValidateError("Invalid schema: broken upstream schema"),
+        ),
+    ):
+        result = CliRunner().invoke(main, [str(document)])
+
+    assert result.exit_code == 4
+    assert "remote_resource_unavailable" in result.output
+    assert "Invalid schema: broken upstream schema" in result.output
 
 
 def test_remote_resource_failure_has_distinct_exit_code(tmp_path):

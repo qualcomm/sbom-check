@@ -51,7 +51,7 @@ def _load_schema_validator() -> jsonschema.protocols.Validator:
         return schema_validator(schema)
     except jsonschema.exceptions.SchemaError as error:
         raise SpdxValidateError(
-            f"Invalid schema {version.schema_url}: {error}"
+            f"Invalid schema {version.schema_url}: {error.message}"
         ) from error
 
 

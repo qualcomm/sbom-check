@@ -3,7 +3,7 @@
 
 """Public API for SPDX 3 validation."""
 
-from spdx3_validator.engine import ValidationEngine
+from spdx3_validator.engine import ValidationEngine, enable_remote_failure_reuse
 from spdx3_validator.models import (
     ValidationMessage,
     ValidationResult,
@@ -15,4 +15,5 @@ __all__ = [
     "ValidationMessage",
     "ValidationResult",
     "ValidationSeverity",
+    "enable_remote_failure_reuse",
 ]

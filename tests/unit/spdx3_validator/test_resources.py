@@ -6,7 +6,9 @@
 import json
 from unittest.mock import Mock, patch
 
+import jsonschema
 import pytest
+from spdx3_validate.core import SpdxValidateError
 
 from sbom_validator.network import (
     VALIDATION_RESOURCE_TIMEOUT_SECONDS,
@@ -91,6 +93,44 @@ def test_load_validation_resources_is_cached_per_process():
         )
     finally:
         _clear_resource_caches()
+
+
+def test_schema_error_uses_bounded_message():
+    """Avoid embedding jsonschema's verbose schema and metaschema dump."""
+    schema_url = "https://spdx.org/schema/3.0.1/spdx-json-schema.json"
+    schema_error = jsonschema.exceptions.SchemaError(
+        "schema must declare a type",
+        validator="type",
+        validator_value="object",
+        instance={"payload": "instance-fragment"},
+        schema={"properties": {"payload": {"description": "schema-fragment"}}},
+    )
+    _clear_resource_caches()
+    try:
+        with (
+            patch(
+                "spdx3_validator.resources._get_spdx_version",
+                return_value=Mock(schema_url=schema_url),
+            ),
+            patch(
+                "spdx3_validator.resources.requests.get",
+                return_value=_Response(b"{}"),
+            ),
+            patch(
+                "spdx3_validator.resources.schema_validator",
+                side_effect=schema_error,
+            ),
+            pytest.raises(SpdxValidateError) as raised,
+        ):
+            _load_schema_validator()
+    finally:
+        _clear_resource_caches()
+
+    assert str(raised.value) == (
+        f"Invalid schema {schema_url}: schema must declare a type"
+    )
+    assert "schema-fragment" not in str(raised.value)
+    assert len(str(schema_error)) > len(str(raised.value))
 
 
 @pytest.mark.parametrize(

@@ -6,7 +6,6 @@
 import json
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,26 +14,16 @@ import click
 from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
 from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
 from sbom_validator.network import configure_network_timeout
-from spdx3_validator.engine import ValidationEngine
+from spdx3_validator.engine import ValidationEngine, enable_remote_failure_reuse
 from spdx3_validator.models import ValidationResult, ValidationSeverity
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
 
 
-@dataclass
-class _WorkerState:
-    """Process-local state shared by sequential file tasks in a CLI worker."""
-
-    remote_resource_failure: ValidationResult | None = None
-
-
-_worker_state = _WorkerState()
-
-
 def _initialize_worker() -> None:
-    """Configure a validation worker and clear its per-batch resource state."""
-    _worker_state.remote_resource_failure = None
+    """Configure network access and reset the worker's resource-failure cache."""
     configure_network_timeout()
+    enable_remote_failure_reuse()
 
 
 def _has_remote_resource_failure(result: ValidationResult) -> bool:
@@ -48,14 +37,9 @@ def _has_remote_resource_failure(result: ValidationResult) -> bool:
 def validate_single_file(
     file_path: Path,
 ) -> tuple[Path, ValidationResult]:
-    """Validate a file, skipping remote checks after this worker's first outage."""
-    if _worker_state.remote_resource_failure is not None:
-        return file_path, _worker_state.remote_resource_failure
-
+    """Validate a single SPDX 3.0.1 file."""
     engine = ValidationEngine()
     result = engine.validate_file(file_path=file_path)
-    if _has_remote_resource_failure(result):
-        _worker_state.remote_resource_failure = result
     return file_path, result
 
 

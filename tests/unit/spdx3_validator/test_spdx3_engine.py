@@ -20,7 +20,8 @@ from spdx3_validate.core import (
     ValidationResult as CustomValidationResult,
 )
 
-from spdx3_validator.engine import ValidationEngine
+import spdx3_validator.engine as spdx3_engine
+from spdx3_validator.engine import ValidationEngine, enable_remote_failure_reuse
 from spdx3_validator.models import ValidationResult
 from spdx3_validator.resources import (
     SPDX_CONTEXT_URL,
@@ -37,8 +38,44 @@ def _clear_resource_caches() -> None:
     _get_spdx_version.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def reset_remote_failure_reuse():
+    """Keep process-local circuit-breaker state isolated between engine tests."""
+    spdx3_engine._remote_failure_state.reuse_enabled = False
+    spdx3_engine._remote_failure_state.failure = None
+    yield
+    spdx3_engine._remote_failure_state.reuse_enabled = False
+    spdx3_engine._remote_failure_state.failure = None
+
+
 class TestValidationEngine:
     """Test cases for the SPDX 3 validation engine."""
+
+    def test_remote_failure_reuse_is_opt_in_and_returns_independent_results(self):
+        """Reuse outages only after explicit opt-in and return defensive copies."""
+        engine = ValidationEngine()
+        document = {"@context": SPDX_CONTEXT_URL}
+
+        with patch.object(
+            engine, "_validate_document", side_effect=URLError("network disabled")
+        ) as validate_document:
+            first = engine.validate_dict(document)
+            second = engine.validate_dict(document)
+            assert validate_document.call_count == 2
+
+            enable_remote_failure_reuse()
+            cached_first = engine.validate_dict(document)
+            cached_first.messages[0].message = "mutated by caller"
+            cached_second = engine.validate_dict(document)
+            enable_remote_failure_reuse()
+            engine.validate_dict(document)
+
+        assert validate_document.call_count == 4
+        assert cached_second.messages[0].message != "mutated by caller"
+        assert cached_first is not cached_second
+        assert cached_first.messages is not cached_second.messages
+        assert first.messages[0].rule_id == "remote_resource_unavailable"
+        assert second.messages[0].rule_id == "remote_resource_unavailable"
 
     def test_nested_context_scan_handles_deep_values(self):
         """Traverse deeply nested JSON-LD iteratively without recursion errors."""
@@ -79,6 +116,8 @@ class TestValidationEngine:
     def test_deep_jsonld_recursion_returns_structured_error(self):
         """Use rdflib's real JSON-LD parser with a locally supplied context."""
         nested_value = '"leaf"'
+        # rdflib uses several Python frames per node, so 500 levels exceed the
+        # default recursion limit.
         for _ in range(500):
             nested_value = '{"name":' + nested_value + "}"
 
@@ -301,6 +340,7 @@ class TestValidationEngine:
             "Invalid schema https://spdx.org/schema/3.0.1/spdx-json-schema.json: "
             "unexpected schema type"
         )
+        enable_remote_failure_reuse()
         with (
             patch(
                 "spdx3_validator.engine.Document.from_text",
@@ -309,9 +349,13 @@ class TestValidationEngine:
             patch(
                 "spdx3_validator.engine.load_validation_resources",
                 side_effect=cause,
-            ),
+            ) as load_resources,
         ):
-            result = ValidationEngine().validate_dict(
+            engine = ValidationEngine()
+            result = engine.validate_dict(
+                {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
+            )
+            cached_result = engine.validate_dict(
                 {"@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld"}
             )
 
@@ -319,8 +363,15 @@ class TestValidationEngine:
         assert result.is_valid is False
         assert result.schema_valid is None
         assert result.semantic_valid is None
-        assert result.messages[0].rule_id == "spdx_validate_error"
-        assert message == f"SPDX validation error: {cause}"
+        assert result.messages[0].rule_id == "remote_resource_unavailable"
+        assert cached_result.messages[0].rule_id == "remote_resource_unavailable"
+        load_resources.assert_called_once()
+        assert message == (
+            "SPDX validation could not be completed because a required remote "
+            "resource was unavailable: SpdxValidateError: "
+            "Invalid schema https://spdx.org/schema/3.0.1/spdx-json-schema.json: "
+            "unexpected schema type"
+        )
 
     def test_unknown_spdx_version_resource_failure_preserves_cause_details(self):
         """Retain the diagnostic raised by the real cached version lookup."""
@@ -340,8 +391,11 @@ class TestValidationEngine:
             _clear_resource_caches()
 
         message = result.messages[0].message
-        assert result.messages[0].rule_id == "spdx_validate_error"
-        assert message == "SPDX validation error: Unknown SPDX version 3.0.1"
+        assert result.messages[0].rule_id == "remote_resource_unavailable"
+        assert message == (
+            "SPDX validation could not be completed because a required remote "
+            "resource was unavailable: SpdxValidateError: Unknown SPDX version 3.0.1"
+        )
 
     @pytest.mark.parametrize(
         ("exception_type", "status_code"),
