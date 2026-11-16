@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from sbom_check.profile.spdx3_model import Spdx3Document
 
 FIXTURE_PATH = (
@@ -189,6 +191,42 @@ def test_relationship_to_as_bare_string_is_accepted() -> None:
 
     [rel] = doc.relationships()
     assert rel.to_ids == ("b",)
+
+
+@pytest.mark.parametrize(
+    "raw_relationship_type",
+    [
+        "describes",
+        "spdx:Core/RelationshipType/describes",
+        "https://spdx.org/rdf/3.0.1/terms/Core/RelationshipType/describes",
+    ],
+)
+def test_relationship_type_is_normalized_across_iri_spellings(
+    raw_relationship_type: str,
+) -> None:
+    """relationshipType is IRI-valued, so every conforming spelling must match.
+
+    A document that writes the expanded IRI (or the spdx:-prefixed form)
+    is just as conformant as one using the short JSON-LD term. Comparing
+    the raw string would make rules miss the relationship entirely.
+    """
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {
+                    "type": "Relationship",
+                    "spdxId": "r1",
+                    "from": "a",
+                    "relationshipType": raw_relationship_type,
+                    "to": ["b"],
+                }
+            ]
+        }
+    )
+
+    [rel] = doc.relationships()
+    assert rel.relationship_type == "describes"
+    assert doc.has_relationship("a", "describes") is True
 
 
 def test_external_identifiers_inline_dict_form() -> None:

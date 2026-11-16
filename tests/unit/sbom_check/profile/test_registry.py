@@ -134,8 +134,9 @@ def test_register_duplicate_rule_id_raises_value_error_naming_id():
 def test_passing_rule_yields_passed_coverage_and_no_messages():
     """A passing rule yields PASSED coverage and emits no messages."""
     registry = ProfileRuleRegistry()
-    registry.register(PassingRule())
-    config = _config_with()
+    rule = PassingRule()
+    registry.register(rule)
+    config = _config_with(**{rule.rule_id: CompletenessCheckRule()})
 
     messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
@@ -148,8 +149,9 @@ def test_passing_rule_yields_passed_coverage_and_no_messages():
 def test_failing_rule_yields_failed_coverage_and_its_message():
     """A failing rule yields FAILED coverage and its message."""
     registry = ProfileRuleRegistry()
-    registry.register(FailingRule())
-    config = _config_with()
+    rule = FailingRule()
+    registry.register(rule)
+    config = _config_with(**{rule.rule_id: CompletenessCheckRule()})
 
     messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
@@ -196,7 +198,7 @@ def test_rule_without_implementation_for_version_is_unsupported_and_blocks():
     registry = ProfileRuleRegistry()
     rule = LegacyVersionRule()
     registry.register(rule)
-    config = _config_with()
+    config = _config_with(**{rule.rule_id: CompletenessCheckRule()})
 
     messages, coverage = registry.run(document={}, context=_context("3.0.1", config))
 
@@ -226,7 +228,7 @@ def test_raising_rule_is_unsupported_blocks_and_emits_exactly_one_error_message(
     registry = ProfileRuleRegistry()
     rule = RaisingRule()
     registry.register(rule)
-    config = _config_with()
+    config = _config_with(**{rule.rule_id: CompletenessCheckRule()})
 
     messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
@@ -253,8 +255,8 @@ def test_configured_severity_overrides_rule_reported_severity():
     assert coverage[0].severity is ValidationSeverity.WARNING
 
 
-def test_configured_remediation_and_description_fill_in_when_rule_omitted_them():
-    """Configured remediation/description fill in when the rule left them unset."""
+def test_configured_remediation_and_description_override_the_rule():
+    """A configured remediation/description wins over whatever the rule supplied."""
     registry = ProfileRuleRegistry()
     rule = FailingRule()
     registry.register(rule)
@@ -273,17 +275,25 @@ def test_configured_remediation_and_description_fill_in_when_rule_omitted_them()
     assert coverage[0].description == "Configured description"
 
 
-def test_rule_with_no_config_entry_runs_under_implicit_defaults():
-    """A rule with no config entry at all runs under implicit defaults (enabled, ERROR)."""
+def test_rule_with_no_config_entry_is_skipped_rather_than_run_at_error():
+    """A rule the active profile never listed must not run at an implicit ERROR default.
+
+    Completeness rules are opt-in per profile. A core-only profile such
+    as basic_spdx lists no completeness checks, so running every
+    registered rule at its ERROR default would make it report profile
+    failures it never asked for.
+    """
     registry = ProfileRuleRegistry()
     rule = PassingRule()
     registry.register(rule)
     config = _config_with()
 
-    _messages, coverage = registry.run(document={}, context=_context("2.3", config))
+    messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
-    assert rule.evaluated is True
-    assert coverage[0].outcome is RuleOutcome.PASSED
+    assert rule.evaluated is False
+    assert messages == []
+    assert coverage[0].outcome is RuleOutcome.SKIPPED
+    assert coverage[0].blocks_completeness is False
 
 
 def test_configured_rule_that_is_not_registered_is_reported_unsupported():

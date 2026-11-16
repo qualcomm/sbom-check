@@ -869,3 +869,48 @@ def test_spdx2_profile_is_unaffected_by_spdx3_support():
     assert result.document_format is DocumentFormat.SPDX
     assert result.rule_coverage == []
     assert result.has_unevaluated_rules() is False
+
+
+def test_basic_spdx_profile_does_not_enforce_spdx3_completeness():
+    """basic_spdx is core-only, so it must not report completeness findings.
+
+    The profile lists no completeness checks. Running every registered
+    rule under an implicit ERROR default would make a core-only profile
+    fail documents on requirements it never opted into, and would ignore
+    the severities the default profile deliberately sets.
+    """
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config = ConfigLoader().load_profile("basic_spdx")
+
+    result = SbomCheckEngine(
+        config=config, validator_class=_PassingSpdx3Core
+    ).validate_dict(document)
+
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
+    assert [message for message in result.messages if message.rule_id] == []
+    assert result.has_unevaluated_rules() is False
+    assert {entry.outcome for entry in result.rule_coverage} == {RuleOutcome.SKIPPED}
+
+
+def test_default_profile_applies_configured_spdx3_severities():
+    """The default profile's per-rule severities must reach the emitted messages."""
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    result = SbomCheckEngine(validator_class=_PassingSpdx3Core).validate_dict(document)
+
+    severities = {
+        message.rule_id: message.severity
+        for message in result.messages
+        if message.rule_id and message.rule_id.startswith("spdx3_completeness.")
+    }
+    assert severities["spdx3_completeness.package_version"] is ValidationSeverity.ERROR
+    assert severities["spdx3_completeness.copyright_text"] is ValidationSeverity.WARNING

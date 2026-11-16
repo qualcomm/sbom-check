@@ -55,6 +55,38 @@ def _normalize_type(raw_type: str) -> str:
     return name
 
 
+def _normalize_relationship_type(raw_value: Any) -> str | None:
+    """Normalize a ``relationshipType`` value to its short enumeration name.
+
+    ``relationshipType`` is IRI-valued in the SPDX 3.0.1 model, so a
+    conforming document may spell ``describes`` as the short JSON-LD term,
+    as a ``spdx:``-prefixed name, or as the fully expanded
+    ``.../Core/RelationshipType/describes`` IRI. Rules compare against the
+    short name, so every spelling is reduced to it here.
+
+    Args:
+        raw_value: The raw ``relationshipType`` value, expected to be a
+            string; any other type yields None.
+
+    Returns:
+        str | None: The short enumeration name (e.g. ``describes``), or
+        None when ``raw_value`` is not a string.
+    """
+    if not isinstance(raw_value, str):
+        return None
+    value = raw_value
+    if value.startswith(_SPDX_IRI_PREFIX):
+        value = value[len(_SPDX_IRI_PREFIX) :]
+    elif value.startswith(_SPDX_PREFIX):
+        value = value[len(_SPDX_PREFIX) :]
+    else:
+        return value
+
+    if not (parts := [part for part in value.split("/") if part]):
+        return raw_value
+    return parts[-1]
+
+
 def _coerce_type_list(raw_value: Any) -> list[str]:
     """Coerce a raw ``type``/``@type`` value into a list of raw type strings.
 
@@ -230,9 +262,23 @@ def _build_element(raw: Any, graph_index: int) -> Spdx3Element | None:
 
 @dataclass(frozen=True)
 class Spdx3Document:
-    """A typed, queryable view over a parsed SPDX 3.0.1 JSON-LD document."""
+    """A typed, queryable view over a parsed SPDX 3.0.1 JSON-LD document.
+
+    Lookups by id and by relationship source are served from indexes
+    built once per document. Rules are run per element, so linear scans
+    here would make a whole validation run quadratic in graph size.
+    """
 
     elements: tuple[Spdx3Element, ...] = field(default_factory=tuple)
+    _by_id: dict[str, Spdx3Element] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _relationships: tuple[Spdx3Relationship, ...] = field(
+        default_factory=tuple, repr=False, compare=False
+    )
+    _relationships_by_from: dict[str, tuple[Spdx3Relationship, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @classmethod
     def from_dict(cls, document: dict[str, Any]) -> Spdx3Document:
@@ -254,7 +300,44 @@ class Spdx3Document:
         for index, entry in enumerate(graph):
             if (built := _build_element(entry, index)) is not None:
                 elements.append(built)
-        return cls(elements=tuple(elements))
+
+        # First definition wins, matching the previous first-match-scan
+        # behaviour for documents that repeat an id.
+        by_id: dict[str, Spdx3Element] = {}
+        for element in elements:
+            if element.element_id is not None:
+                by_id.setdefault(element.element_id, element)
+
+        relationships = tuple(
+            Spdx3Relationship(
+                from_id=(
+                    from_value
+                    if isinstance(from_value := element.get("from"), str)
+                    else None
+                ),
+                relationship_type=_normalize_relationship_type(
+                    element.get("relationshipType")
+                ),
+                to_ids=tuple(_as_id_list(element.get("to"))),
+                element=element,
+            )
+            for element in elements
+            if element.is_type("Relationship")
+        )
+
+        by_from: dict[str, list[Spdx3Relationship]] = {}
+        for relationship in relationships:
+            if relationship.from_id is not None:
+                by_from.setdefault(relationship.from_id, []).append(relationship)
+
+        return cls(
+            elements=tuple(elements),
+            _by_id=by_id,
+            _relationships=relationships,
+            _relationships_by_from={
+                key: tuple(value) for key, value in by_from.items()
+            },
+        )
 
     def elements_of_type(self, *types: str) -> list[Spdx3Element]:
         """List all elements matching any of the given normalized types.
@@ -279,10 +362,7 @@ class Spdx3Document:
         """
         if not element_id:
             return None
-        for element in self.elements:
-            if element.element_id == element_id:
-                return element
-        return None
+        return self._by_id.get(element_id)
 
     def packages(self) -> list[Spdx3Element]:
         """List all ``software_Package`` elements.
@@ -360,26 +440,7 @@ class Spdx3Document:
         Returns:
             list[Spdx3Relationship]: All relationships, in document order.
         """
-        result: list[Spdx3Relationship] = []
-        for element in self.elements_of_type("Relationship"):
-            from_value = element.get("from")
-            from_id = from_value if isinstance(from_value, str) else None
-            relationship_type_value = element.get("relationshipType")
-            relationship_type = (
-                relationship_type_value
-                if isinstance(relationship_type_value, str)
-                else None
-            )
-            to_ids = tuple(_as_id_list(element.get("to")))
-            result.append(
-                Spdx3Relationship(
-                    from_id=from_id,
-                    relationship_type=relationship_type,
-                    to_ids=to_ids,
-                    element=element,
-                )
-            )
-        return result
+        return list(self._relationships)
 
     def relationships_from(
         self, from_id: str | None, relationship_type: str | None = None
@@ -398,7 +459,7 @@ class Spdx3Document:
         """
         if not from_id:
             return []
-        matches = [rel for rel in self.relationships() if rel.from_id == from_id]
+        matches = list(self._relationships_by_from.get(from_id, ()))
         if relationship_type is not None:
             matches = [
                 rel for rel in matches if rel.relationship_type == relationship_type

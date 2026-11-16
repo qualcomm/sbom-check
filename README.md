@@ -193,8 +193,14 @@ compliance_requirements:
 | `severity` | `ERROR`, `WARNING`, or `INFO`. Set per rule; a rule reports a finding and configuration decides how loud it is. |
 | `spdx_versions` | Specification versions the rule applies to, as bare versions (`"2.3"`, `"3.0.1"`). |
 | `description` | Vendor-facing description of the requirement. |
-| `remediation` | Vendor-facing instruction for fixing a failure. |
+| `remediation` | Vendor-facing instruction for fixing a failure. A configured value replaces the rule's built-in text. |
 | `supported` | Set `false` for a rule with no approved mapping. Reported `unsupported`, and blocks completeness. |
+
+Completeness rules are opt-in per profile. A rule the active profile does not
+list at all is reported `skipped` and does not block, so a core-only profile
+such as `basic_spdx` enforces no completeness requirements. Use `--profile
+default` to get the SPDX 3.0.1 completeness rules and their configured
+severities.
 
 The legacy boolean form is still accepted, so existing configuration keeps
 working:

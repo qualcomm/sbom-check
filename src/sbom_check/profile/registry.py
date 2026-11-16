@@ -17,7 +17,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-from sbom_check.config.models import CompletenessCheckRule
 from sbom_check.models import (
     DocumentFormat,
     RuleCoverage,
@@ -167,7 +166,21 @@ class ProfileRuleRegistry:
                 rule.rule_id
             )
             if cfg is None:
-                cfg = CompletenessCheckRule()
+                # A profile that does not list a rule has not opted into
+                # it. Falling back to CompletenessCheckRule() would run
+                # every rule at its ERROR default, which would make
+                # core-only profiles such as basic_spdx report profile
+                # completeness failures they never asked for.
+                coverage_list.append(
+                    RuleCoverage(
+                        rule_id=rule.rule_id,
+                        outcome=RuleOutcome.SKIPPED,
+                        severity=None,
+                        description=rule.description,
+                        reason="not enabled by the active profile",
+                    )
+                )
+                continue
 
             if not cfg.enabled:
                 coverage_list.append(
@@ -249,7 +262,11 @@ class ProfileRuleRegistry:
             updated_messages = []
             for message in messages:
                 updates: dict[str, Any] = {"severity": cfg.severity}
-                if message.remediation is None and cfg.remediation is not None:
+                # Configuration wins over the rule's built-in text. Rules
+                # always supply a remediation, so deferring to the rule
+                # whenever one exists would make a configured remediation
+                # unreachable.
+                if cfg.remediation is not None:
                     updates["remediation"] = cfg.remediation
                 updated_messages.append(message.model_copy(update=updates))
             all_messages.extend(updated_messages)
