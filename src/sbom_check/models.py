@@ -148,8 +148,13 @@ class SbomCheckResult(BaseModel):
             profile_status = (
                 ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
             )
+        elif profile_result is not None:
+            profile_valid = profile_result.overall_valid
+            profile_status = (
+                ProfileStatus.PASSED if profile_valid else ProfileStatus.FAILED
+            )
         else:
-            profile_valid = profile_result.overall_valid if profile_result else None
+            profile_valid = None
             profile_status = ProfileStatus.NOT_APPLICABLE
         overall_valid = (
             core_valid
@@ -164,7 +169,9 @@ class SbomCheckResult(BaseModel):
             profile_status=profile_status,
             messages=messages,
             summary=summary,
-            profile_name=profile_name if is_spdx_document else None,
+            profile_name=(
+                profile_name if is_spdx_document or profile_result is not None else None
+            ),
             file_path=file_path,
             document_format=document_format,
             spec_version=spec_version,
@@ -194,6 +201,10 @@ class SbomCheckResult(BaseModel):
                     message=raw_message.message,
                     rule_id=getattr(raw_message, "rule_id", None),
                     field_path=getattr(raw_message, "field_path", getattr(raw_message, "path", None)),
+                    section_reference=getattr(raw_message, "section_reference", None),
+                    found_value=getattr(raw_message, "found_value", None),
+                    expected_value=getattr(raw_message, "expected_value", None),
+                    remediation=getattr(raw_message, "remediation", None),
                 )
                 messages.append(converted_message)
 

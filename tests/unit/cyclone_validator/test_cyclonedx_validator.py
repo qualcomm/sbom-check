@@ -45,8 +45,8 @@ def test_returns_all_schema_errors_with_paths_and_descriptions() -> None:
 def test_rejects_unknown_schema_version() -> None:
     with pytest.raises(ValueError, match="Unsupported CycloneDX schema version"):
         CycloneDXValidator().validate(
-            {"bomFormat": "CycloneDX", "specVersion": "1.2"},
-            "1.2",
+            {"bomFormat": "CycloneDX", "specVersion": "1.1"},
+            "1.1",
         )
 
 

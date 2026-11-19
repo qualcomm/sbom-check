@@ -14,8 +14,10 @@ if TYPE_CHECKING:
     from sbom_validator.engine import ValidatorEngine
 
 
-SUPPORTED_CYCLONEDX_VERSIONS = frozenset({"1.3", "1.4", "1.5", "1.6", "1.7"})
-MINIMUM_CYCLONEDX_VERSION = "1.3"
+# CycloneDX JSON starts at 1.2. Whether 1.2 is acceptable is a profile
+# decision (cyclonedx_requirements.minimum_spec_version), not a detection one.
+SUPPORTED_CYCLONEDX_VERSIONS = frozenset({"1.2", "1.3", "1.4", "1.5", "1.6", "1.7"})
+MINIMUM_CYCLONEDX_VERSION = "1.2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,12 +136,12 @@ def _detect_cyclonedx(data: dict[str, Any]) -> DetectedDocument:
 
 
 def _is_older_cyclonedx_version(version: str) -> bool:
-    """Return whether a well-formed CycloneDX version is below 1.3."""
+    """Return whether a well-formed CycloneDX version predates CycloneDX JSON."""
     try:
         major, minor = (int(part) for part in version.split(".", 1))
     except (ValueError, TypeError):
         return False
-    return (major, minor) < (1, 3)
+    return (major, minor) < (1, 2)
 
 
 __all__ = [

@@ -6,11 +6,11 @@ SPDX-License-Identifier: BSD-3-Clause
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 
-A multi-format SBOM validator supporting SPDX 2.3 and CycloneDX JSON documents. SPDX documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation.
+A multi-format SBOM validator supporting SPDX 2.3 and CycloneDX JSON documents. Both formats receive configurable completeness requirements on top of core specification validation.
 
 ## Features
 
-- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.3–1.7 documents
+- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.2–1.7 documents
 - **CLI Tools**: The `sbom-check`, `spdx-validate`, and `cyclonedx-validate` commands are available
 - **Configurable Requirements**: YAML-based configuration system with inheritance
 - **Multiple Profiles**: Built-in profiles for different use cases (basic, default, automotive, etc.)
@@ -97,21 +97,76 @@ Validate a CycloneDX JSON document with the same command used for SPDX documents
 uv run sbom-check supplier-bom.cdx.json
 ```
 
-SBOM-Check supports CycloneDX JSON versions 1.3, 1.4, 1.5, 1.6, and 1.7. The document's `specVersion` selects the corresponding schema bundled with `cyclonedx-python-lib`; validation does not require network access. JSON Schema validation rejects additional properties as schema errors. These violations make the document invalid (`core_valid: false` and `overall_valid: false`). CycloneDX XML is not supported.
+SBOM-Check supports CycloneDX JSON versions 1.2 through 1.7. The document's `specVersion` selects the corresponding schema bundled with `cyclonedx-python-lib`; validation does not require network access. JSON Schema validation rejects additional properties as schema errors. These violations make the document invalid (`core_valid: false` and `overall_valid: false`). CycloneDX XML is not supported.
 
-CycloneDX validation is currently limited to structural JSON Schema validation. SPDX-specific Qualcomm completeness and profile checks are not applied to CycloneDX documents. Results therefore report `profile_status: "not_applicable"`, with `core_valid` indicating schema status. CycloneDX semantic, completeness, and business validation are planned separately.
+CycloneDX documents go through three layers. Each layer's findings have their own `rule_id` prefix, so you can tell them apart in text and JSON output:
+
+| Layer | `rule_id` | Severity | Affects |
+|---|---|---|---|
+| Structural (JSON Schema) | `cyclonedx_schema_error` | Always ERROR | `core_valid` |
+| Semantic integrity | `cyclonedx_semantic.duplicate_bom_ref`, `cyclonedx_semantic.dangling_dependency_ref` | Always ERROR | `core_valid` |
+| Completeness profile | `cyclonedx_completeness.*` | Set by the profile | `profile_status` |
+
+Semantic integrity covers the problems the schema cannot catch. A `bom-ref` must be unique across `metadata.component`, all components (including nested ones) and all services. Every dependency `ref`, `dependsOn` and `provides` entry must name one of them.
+
+### CycloneDX completeness profile
+
+The `default` and `qualcomm_cyclonedx` profiles apply the Qualcomm CycloneDX completeness profile. `basic_spdx` does not, and reports `profile_status: "not_applicable"` for CycloneDX documents. The profile is set in the `cyclonedx_requirements` section of the configuration:
+
+```yaml
+cyclonedx_requirements:
+  minimum_spec_version: "1.3"
+  document_required_fields: [bomFormat, specVersion, serialNumber, version, metadata.timestamp, metadata.tools]
+  component_required_fields: [name, version, supplier.name, purl, bom-ref, type]
+  severities:                       # ERROR, WARNING, INFO or OFF
+    missing_document_field: ERROR
+    missing_component_field: ERROR
+    no_components: ERROR            # "creator metadata only" SBOMs
+    missing_dependency_graph: ERROR # components present, but no dependsOn edges
+    invalid_purl: WARNING           # ecosystem-aware Package URL check
+    below_minimum_spec_version: ERROR
+```
+
+Required fields apply to every component, including nested ones; `metadata.component` describes the product rather than one of its parts, so it is not included. `metadata.tools` accepts both the array form (before 1.5) and the object form (1.5 and later). A version below `minimum_spec_version` is reported at the configured severity, so a profile can accept CycloneDX 1.2 with a warning. A profile with no `cyclonedx_requirements` section rejects versions below 1.3.
+
+#### Vendor overrides
+
+Pass a vendor file with `--config` on top of a profile. The override changes only the settings it lists; everything else, including the profile's SPDX requirements, is kept. `severities` is merged check by check. A list such as `component_required_fields` replaces the profile's list.
+
+```yaml
+# vendor-x.yaml: Vendor X has no supplier data and still ships CycloneDX 1.2
+metadata: {name: "Vendor X", version: "1"}
+cyclonedx_requirements:
+  minimum_spec_version: "1.3"
+  component_required_fields: [name, version, purl, bom-ref, type]
+  severities: {below_minimum_spec_version: WARNING}
+```
+
+```bash
+uv run sbom-check --profile qualcomm_cyclonedx --config vendor-x.yaml supplier-bom.cdx.json
+```
+
+Set `cyclonedx_requirements: null` in an override to turn the CycloneDX profile off.
 
 Example JSON result:
 
 ```json
 {
   "document_format": "CycloneDX",
-  "spec_version": "1.7",
-  "overall_valid": true,
+  "spec_version": "1.4",
+  "overall_valid": false,
   "core_valid": true,
-  "profile_status": "not_applicable",
-  "spdx_valid": null,
-  "profile_valid": null
+  "profile_status": "failed",
+  "profile_name": "Default SBOM Requirements",
+  "messages": [
+    {
+      "severity": "ERROR",
+      "rule_id": "cyclonedx_completeness.no_components",
+      "message": "The SBOM lists no components. Creator and tool metadata alone is not an SBOM: it must list the software it describes.",
+      "field_path": "$.components",
+      "remediation": "Regenerate the SBOM with every package, library and binary you ship listed as a component, each with its name, version, supplier and package URL (purl)."
+    }
+  ]
 }
 ```
 
@@ -122,8 +177,13 @@ Example JSON result:
 - Uses spdx-validator with no additional requirements
 - Suitable for basic compliance checking
 
+### Qualcomm CycloneDX Profile (`qualcomm_cyclonedx`)
+- Qualcomm CycloneDX completeness profile (see [CycloneDX completeness profile](#cyclonedx-completeness-profile))
+- SPDX documents get basic SPDX 2.3 validation only
+
 ### Default Profile
 - Comprehensive requirements based on enterprise SBOM standards
+- Also applies the Qualcomm CycloneDX completeness profile to CycloneDX documents
 - Includes build tools validation
 - Enforces completeness and quality standards
 - Document namespace validation
@@ -344,7 +404,7 @@ Options:
 
 ### cyclonedx-validate
 
-Direct CycloneDX JSON schema validation for versions 1.3–1.7. Semantic and Qualcomm completeness validation are not performed.
+Direct CycloneDX JSON schema validation for versions 1.2–1.7. Semantic integrity and Qualcomm completeness validation are not performed; use `sbom-check` for those.
 
 ```bash
 uv run cyclonedx-validate --output-format json supplier-bom.cdx.json
