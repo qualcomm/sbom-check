@@ -11,6 +11,11 @@ from typing import TYPE_CHECKING, Any
 from warnings import warn
 
 from sbom_check.config.loader import ConfigLoader
+from sbom_check.config.models import CycloneDXRequirementsConfig
+from sbom_check.cyclonedx_profile import (
+    validate_cyclonedx_completeness,
+    version_tuple,
+)
 from sbom_check.detection import UnsupportedDocumentError, detect_document
 from sbom_check.models import (
     DocumentFormat,
@@ -173,22 +178,43 @@ class SbomCheckEngine:
         except UnsupportedDocumentError as error:
             return self._unsupported_result(error, file_path=file_path)
 
+        if (
+            detected.format is DocumentFormat.CYCLONEDX
+            and self.config.cyclonedx_requirements is None
+            and detected.spec_version is not None
+            and version_tuple(detected.spec_version)
+            < version_tuple(_DEFAULT_CYCLONEDX_FLOOR)
+        ):
+            # Without a CycloneDX profile there is no configured floor or
+            # severity, so keep the long-standing hard minimum.
+            return self._unsupported_result(
+                UnsupportedDocumentError(
+                    f"Unsupported CycloneDX version '{detected.spec_version}'; "
+                    f"CycloneDX {detected.spec_version} is below the supported "
+                    f"minimum of {_DEFAULT_CYCLONEDX_FLOOR}",
+                    rule_id="unsupported_version",
+                ),
+                file_path=file_path,
+            )
+
         selected_engine = (
             self.engine
             if self._engine_override is not None or self._validator_class is not None
             else self._get_engine(detected.validator_class)
         )
-        profile_applicable = detected.format is DocumentFormat.SPDX
-
         # Run the selected format engine.
         core_result = selected_engine.validate_dict(sbom_data)
 
-        # The completeness profile is SPDX-specific.
-        profile_result = (
-            self._validate_profile_requirements(sbom_data)
-            if profile_applicable
-            else None
-        )
+        profile_result: SbomCheckResult | None = None
+        if detected.format is DocumentFormat.SPDX:
+            profile_result = self._validate_profile_requirements(sbom_data)
+        elif (
+            detected.format is DocumentFormat.CYCLONEDX
+            and self.config.cyclonedx_requirements is not None
+        ):
+            profile_result = self._validate_cyclonedx_profile(
+                sbom_data, self.config.cyclonedx_requirements
+            )
 
         # Combine results
         combined_result = SbomCheckResult.combine(
@@ -234,6 +260,29 @@ class SbomCheckEngine:
             document_format=DocumentFormat.UNKNOWN,
             spec_version=None,
         )
+
+    def _validate_cyclonedx_profile(
+        self, sbom_data: dict[str, Any], requirements: CycloneDXRequirementsConfig
+    ) -> SbomCheckResult:
+        """Run the CycloneDX completeness profile."""
+        result = SbomCheckResult(
+            overall_valid=True,
+            spdx_valid=None,
+            profile_valid=True,
+            profile_name=self.config.metadata.name,
+        )
+        for finding in validate_cyclonedx_completeness(sbom_data, requirements):
+            result.add_message(
+                finding.severity,
+                finding.message,
+                rule_id=finding.rule_id,
+                field_path=finding.field_path,
+                section_reference=finding.section_reference,
+                found_value=finding.found_value,
+                expected_value=finding.expected_value,
+                remediation=finding.remediation,
+            )
+        return result
 
     def _validate_profile_requirements(
         self, sbom_data: dict[str, Any]
@@ -510,3 +559,6 @@ class SbomCheckEngine:
                 return None
 
         return current
+
+
+_DEFAULT_CYCLONEDX_FLOOR = CycloneDXRequirementsConfig().minimum_spec_version

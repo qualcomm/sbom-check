@@ -152,15 +152,15 @@ def test_dict_validation_returns_error_for_non_serializable_input() -> None:
 
 def test_unsupported_version_returns_validation_message() -> None:
     result = CycloneDXValidationEngine().validate_json_string(
-        '{"bomFormat":"CycloneDX","specVersion":"1.2"}'
+        '{"bomFormat":"CycloneDX","specVersion":"1.1"}'
     )
 
     assert not result.is_valid
     assert result.messages[0].rule_id == "unsupported_version"
-    assert "1.2" in result.messages[0].message
+    assert "1.1" in result.messages[0].message
 
 
-def test_cyclonedx_semantic_validator_is_explicit_todo() -> None:
+def test_cyclonedx_semantic_validator_accepts_consistent_document() -> None:
     result = SemanticValidator().validate(_valid_document(), "1.7")
 
     assert result.is_valid

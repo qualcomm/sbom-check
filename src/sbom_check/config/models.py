@@ -5,9 +5,9 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ConfigMetadata(BaseModel):
@@ -172,6 +172,91 @@ class ComplianceRequirementsConfig(BaseModel):
     quality_assurance: dict[str, bool] = Field(default_factory=dict)
 
 
+CheckSeverity = Literal["ERROR", "WARNING", "INFO", "OFF"]
+
+CYCLONEDX_CHECKS = (
+    "missing_document_field",
+    "missing_component_field",
+    "no_components",
+    "missing_dependency_graph",
+    "invalid_purl",
+    "below_minimum_spec_version",
+)
+
+
+def _default_cyclonedx_severities() -> dict[str, CheckSeverity]:
+    return {
+        "missing_document_field": "ERROR",
+        "missing_component_field": "ERROR",
+        "no_components": "ERROR",
+        "missing_dependency_graph": "ERROR",
+        "invalid_purl": "WARNING",
+        "below_minimum_spec_version": "ERROR",
+    }
+
+
+class CycloneDXRequirementsConfig(BaseModel):
+    """Completeness profile applied to CycloneDX documents.
+
+    Field lists use dot notation relative to the document or component.
+    ``severities`` maps each check in ``CYCLONEDX_CHECKS`` to a severity, or
+    to ``"OFF"`` to disable it. Overrides only need to list the checks they
+    change; unlisted checks keep the profile default.
+    """
+
+    minimum_spec_version: str = "1.3"
+    document_required_fields: list[str] = Field(
+        default_factory=lambda: [
+            "bomFormat",
+            "specVersion",
+            "serialNumber",
+            "version",
+            "metadata.timestamp",
+            "metadata.tools",
+        ]
+    )
+    component_required_fields: list[str] = Field(
+        default_factory=lambda: [
+            "name",
+            "version",
+            "supplier.name",
+            "purl",
+            "bom-ref",
+            "type",
+        ]
+    )
+    severities: dict[str, CheckSeverity] = Field(
+        default_factory=_default_cyclonedx_severities
+    )
+
+    @field_validator("minimum_spec_version")
+    @classmethod
+    def _check_version(cls, value: str) -> str:
+        major, dot, minor = value.partition(".")
+        if not (dot and major.isdigit() and minor.isdigit()):
+            raise ValueError(
+                f"minimum_spec_version must look like '1.4', got {value!r}"
+            )
+        return value
+
+    @field_validator("severities")
+    @classmethod
+    def _check_severity_keys(
+        cls, value: dict[str, CheckSeverity]
+    ) -> dict[str, CheckSeverity]:
+        if unknown := set(value) - set(CYCLONEDX_CHECKS):
+            raise ValueError(
+                f"Unknown CycloneDX check(s) {sorted(unknown)}; "
+                f"valid checks are {list(CYCLONEDX_CHECKS)}"
+            )
+        return value
+
+    def severity(self, check: str) -> CheckSeverity:
+        """Return the configured severity for a check, or its default."""
+        configured = dict(self.severities)
+        return configured.get(check, _default_cyclonedx_severities()[check])
+
+
 class ReportingConfig(BaseModel):
     """Configuration for reporting and output."""
 
@@ -205,6 +290,8 @@ class SbomCheckConfig(BaseModel):
         default_factory=ComplianceRequirementsConfig
     )
     custom_rules: list[CustomRule] = Field(default_factory=list)
+    # None means CycloneDX documents get structural and semantic checks only.
+    cyclonedx_requirements: CycloneDXRequirementsConfig | None = None
     error_messages: dict[str, str] = Field(default_factory=dict)
     reporting: ReportingConfig = Field(default_factory=ReportingConfig)
 
@@ -230,6 +317,7 @@ class SbomCheckConfig(BaseModel):
                 description="Comprehensive SBOM validation with enterprise requirements",
                 reference_url="https://spdx.github.io/spdx-spec/v2.3/",
             ),
+            cyclonedx_requirements=CycloneDXRequirementsConfig(),
             spdx_validation=SpdxValidationConfig(
                 enable_schema_validation=True,
                 enable_semantic_validation=True,
@@ -317,11 +405,30 @@ class SbomCheckConfig(BaseModel):
             ),
         )
 
+    @classmethod
+    def create_qualcomm_cyclonedx(cls) -> SbomCheckConfig:
+        """Qualcomm CycloneDX completeness with basic SPDX validation only."""
+        return cls(
+            metadata=ConfigMetadata(
+                name="Qualcomm CycloneDX Completeness",
+                version="1.0",
+                description=(
+                    "Qualcomm CycloneDX completeness profile; SPDX documents "
+                    "get basic SPDX 2.3 validation only"
+                ),
+                reference_url="https://cyclonedx.org/specification/overview/",
+            ),
+            cyclonedx_requirements=CycloneDXRequirementsConfig(),
+        )
+
     def merge_with(self, other: SbomCheckConfig) -> SbomCheckConfig:
         """Merge this configuration with another, with other taking precedence."""
         # This is a simplified merge - in practice, you'd want more sophisticated merging
         merged_dict = self.model_dump()
-        other_dict = other.model_dump()
+        # Only fields the override actually set take precedence. Dumping the
+        # override's defaults too would let a partial vendor file silently
+        # erase every list the base profile defines.
+        other_dict = other.model_dump(exclude_unset=True)
 
         # Simple recursive merge
         def merge_dicts(

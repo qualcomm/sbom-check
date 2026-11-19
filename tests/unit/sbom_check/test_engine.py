@@ -52,7 +52,7 @@ def test_engine_override_is_used_in_auto_detect_mode(sample_valid_spdx_document)
 def test_deprecated_spdx_engine_override_does_not_replace_cyclonedx_validator():
     """The deprecated SPDX-specific override leaves CycloneDX dispatch intact."""
     spdx_engine = ValidationEngine()
-    engine = SbomCheckEngine()
+    engine = SbomCheckEngine(profile_name="basic_spdx")
 
     with pytest.warns(DeprecationWarning, match="spdx_engine"):
         engine.spdx_engine = spdx_engine
@@ -597,6 +597,7 @@ def test_explicit_validator_uses_declared_spdx_22_version(
 def test_cyclonedx_schema_paths_are_preserved_in_combined_result():
     """CycloneDX JSON paths survive SbomCheckResult conversion."""
     engine = SbomCheckEngine(
+        profile_name="basic_spdx",
         validator_class=CycloneDXValidationEngine,
     )
     result = engine.validate_dict(
@@ -621,7 +622,7 @@ def test_cyclonedx_schema_paths_are_preserved_in_combined_result():
 
 def test_engine_auto_detects_cyclonedx_without_explicit_validator_class():
     """Direct engine callers receive automatic format dispatch."""
-    result = SbomCheckEngine().validate_dict(
+    result = SbomCheckEngine(profile_name="basic_spdx").validate_dict(
         {"bomFormat": "CycloneDX", "specVersion": "1.7"}
     )
 
@@ -664,7 +665,7 @@ def test_unsupported_spdx_version_preserves_validator_diagnostics(
 
 
 def test_cyclonedx_additional_properties_make_combined_result_invalid() -> None:
-    result = SbomCheckEngine().validate_dict(
+    result = SbomCheckEngine(profile_name="basic_spdx").validate_dict(
         {
             "bomFormat": "CycloneDX",
             "specVersion": "1.4",

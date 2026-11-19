@@ -22,6 +22,7 @@ from cyclone_validator.models import (
 )
 
 _SCHEMA_VERSIONS: dict[str, SchemaVersion] = {
+    "1.2": SchemaVersion.V1_2,
     "1.3": SchemaVersion.V1_3,
     "1.4": SchemaVersion.V1_4,
     "1.5": SchemaVersion.V1_5,
@@ -33,20 +34,130 @@ _SCHEMA_VERSIONS: dict[str, SchemaVersion] = {
 _MAX_ENUM_ERROR_LENGTH = 512
 
 
-class SemanticValidator:
-    """Validate CycloneDX semantic constraints.
+def iter_bom_ref_holders(
+    document: dict[str, Any],
+) -> Iterable[tuple[str, dict[str, Any]]]:
+    """Yield ``(json_path, element)`` for every element that may carry a bom-ref.
 
-    TODO: Implement CycloneDX semantic validation rules after the schema
-    validator is complete.
+    Covers ``metadata.component``, top-level and nested ``components``, and
+    top-level and nested ``services``. Dependency entries may legally point at
+    any of these, so reference resolution and uniqueness consider all of them.
+    """
+    metadata = document.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("component"), dict):
+        yield from _walk_element("$.metadata.component", metadata["component"])
+    for key in ("components", "services"):
+        if isinstance(items := document.get(key), list):
+            yield from _walk_list(f"$.{key}", items)
+
+
+def _walk_list(path: str, items: list[Any]) -> Iterable[tuple[str, dict[str, Any]]]:
+    for index, item in enumerate(items):
+        if isinstance(item, dict):
+            yield from _walk_element(f"{path}[{index}]", item)
+
+
+def _walk_element(
+    path: str, element: dict[str, Any]
+) -> Iterable[tuple[str, dict[str, Any]]]:
+    yield path, element
+    for key in ("components", "services"):
+        if isinstance(children := element.get(key), list):
+            yield from _walk_list(f"{path}.{key}", children)
+
+
+class SemanticValidator:
+    """Validate CycloneDX semantic integrity the JSON Schema cannot express.
+
+    Every failure here is a hard error: duplicate ``bom-ref`` values make
+    dependency entries ambiguous, and dangling references describe a graph
+    that does not match the document's contents.
     """
 
     def validate(
         self, document: dict[str, Any], spec_version: str
     ) -> CycloneDXValidationResult:
-        """Return a passing result until semantic rules are implemented."""
-        del document, spec_version
-        # TODO: Add CycloneDX semantic constraint validation.
-        return CycloneDXValidationResult(is_valid=True, messages=[])
+        """Check bom-ref uniqueness and dependency reference resolution."""
+        del spec_version
+        messages: list[ValidationMessage] = []
+
+        first_seen: dict[str, str] = {}
+        duplicates: dict[str, list[str]] = {}
+        for path, element in iter_bom_ref_holders(document):
+            if not isinstance(ref := element.get("bom-ref"), str):
+                continue
+            if ref in first_seen:
+                duplicates.setdefault(ref, [first_seen[ref]]).append(path)
+            else:
+                first_seen[ref] = path
+
+        for ref, paths in duplicates.items():
+            messages.append(
+                ValidationMessage(
+                    severity=ValidationSeverity.ERROR,
+                    message=(
+                        f"The identifier (bom-ref) {ref!r} is used by "
+                        f"{len(paths)} entries ({', '.join(paths)}). Each "
+                        "component and service needs its own identifier, "
+                        "otherwise dependency entries that name it are ambiguous."
+                    ),
+                    rule_id="cyclonedx_semantic.duplicate_bom_ref",
+                    field_path=f"{paths[1]}.bom-ref",
+                    found_value=ref,
+                    remediation=(
+                        "Give every component and service a unique bom-ref, "
+                        "then update the dependencies section to use the new "
+                        "identifiers."
+                    ),
+                )
+            )
+
+        messages.extend(self._dangling_references(document, set(first_seen)))
+        return CycloneDXValidationResult(is_valid=not messages, messages=messages)
+
+    @staticmethod
+    def _dangling_references(
+        document: dict[str, Any], known_refs: set[str]
+    ) -> list[ValidationMessage]:
+        messages: list[ValidationMessage] = []
+        if not isinstance(dependencies := document.get("dependencies"), list):
+            return messages
+
+        def report(ref: Any, path: str, role: str) -> None:
+            if isinstance(ref, str) and ref not in known_refs:
+                messages.append(
+                    ValidationMessage(
+                        severity=ValidationSeverity.ERROR,
+                        message=(
+                            f"The dependency graph {role} {ref!r}, but no "
+                            "component or service in the document has that "
+                            "bom-ref."
+                        ),
+                        rule_id="cyclonedx_semantic.dangling_dependency_ref",
+                        field_path=path,
+                        found_value=ref,
+                        remediation=(
+                            "Add the missing component to the SBOM, or correct "
+                            "the identifier in the dependencies section so it "
+                            "matches an existing component's bom-ref."
+                        ),
+                    )
+                )
+
+        for index, entry in enumerate(dependencies):
+            if not isinstance(entry, dict):
+                continue
+            base = f"$.dependencies[{index}]"
+            report(entry.get("ref"), f"{base}.ref", "lists an entry for")
+            for key in ("dependsOn", "provides"):
+                if isinstance(targets := entry.get(key), list):
+                    for target_index, target in enumerate(targets):
+                        report(
+                            target,
+                            f"{base}.{key}[{target_index}]",
+                            "points to",
+                        )
+        return messages
 
 
 class JsonSchemaValidator:

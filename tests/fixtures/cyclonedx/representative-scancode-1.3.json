@@ -38,7 +38,7 @@
   ],
   "dependencies": [
     {
-      "ref": "pkg:generic/example/application@1.0.0",
+      "ref": "pkg:generic/example-product@1.0.0",
       "dependsOn": [
         "pkg:pypi/requests@2.32.0",
         "pkg:npm/lodash@4.17.21"

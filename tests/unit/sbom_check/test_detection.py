@@ -29,7 +29,7 @@ def test_spdx_document_with_spec_version_extension_is_detected_as_spdx() -> None
     assert detected.spec_version == "2.3"
 
 
-@pytest.mark.parametrize("version", ["1.3", "1.4", "1.5", "1.6", "1.7"])
+@pytest.mark.parametrize("version", ["1.2", "1.3", "1.4", "1.5", "1.6", "1.7"])
 def test_detect_supported_cyclonedx_versions(version: str) -> None:
     detected = detect_document({"bomFormat": "CycloneDX", "specVersion": version})
     assert detected.format is DocumentFormat.CYCLONEDX
@@ -37,7 +37,7 @@ def test_detect_supported_cyclonedx_versions(version: str) -> None:
     assert detected.validator_class is CycloneDXValidationEngine
 
 
-@pytest.mark.parametrize("version", ["1.0", "1.1", "1.2"])
+@pytest.mark.parametrize("version", ["1.0", "1.1"])
 def test_reject_cyclonedx_versions_below_minimum(version: str) -> None:
     with pytest.raises(UnsupportedDocumentError, match="below the supported minimum"):
         detect_document({"bomFormat": "CycloneDX", "specVersion": version})

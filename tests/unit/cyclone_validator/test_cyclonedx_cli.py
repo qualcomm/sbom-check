@@ -95,7 +95,7 @@ def test_invalid_document_reports_schema_paths():
 
 def test_unsupported_version_is_reported_as_structured_error(tmp_path):
     document = json.loads((FIXTURES / "valid-1.7.json").read_text())
-    document["specVersion"] = "1.2"
+    document["specVersion"] = "1.1"
     document_path = tmp_path / "unsupported.json"
     document_path.write_text(json.dumps(document))
 
@@ -105,7 +105,7 @@ def test_unsupported_version_is_reported_as_structured_error(tmp_path):
     payload = json.loads(result.output)
     message = payload["results"][0]["messages"][0]
     assert message["rule_id"] == "unsupported_version"
-    assert "1.2" in message["message"]
+    assert "1.1" in message["message"]
 
 
 def test_recursive_validation_reports_summary_counts(tmp_path):

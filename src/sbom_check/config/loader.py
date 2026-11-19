@@ -31,6 +31,11 @@ class ConfigLoader:
         # Default comprehensive profile
         self._builtin_profiles["default"] = SbomCheckConfig.create_default()
 
+        # CycloneDX completeness without the comprehensive SPDX requirements
+        self._builtin_profiles["qualcomm_cyclonedx"] = (
+            SbomCheckConfig.create_qualcomm_cyclonedx()
+        )
+
     def load_from_file(self, config_path: Path | str) -> SbomCheckConfig:
         """Load configuration from a YAML or JSON file.
 
