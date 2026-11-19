@@ -166,7 +166,7 @@ Profile validation still runs and reports independently, so completeness
 findings are actionable now. To see profile results in isolation, read
 `profile_status` and `rule_coverage` rather than `overall_valid`.
 
-## Identifiers and references
+## Identifiers and the SPDX License List
 
 Element ids, references and vocabulary values (`relationshipType`,
 `externalIdentifierType`) are compared after JSON-LD compact-IRI expansion,
@@ -175,6 +175,15 @@ prefixes used are the one the SPDX 3.0.1 context defines (`spdx:`), pinned in
 `spdx3_model.py`, plus any prefixes the document defines in an inline
 `@context`. Remote contexts are never fetched, and relative ids are not
 resolved against `@base`.
+
+A license reference of the form `https://spdx.org/licenses/<id>` resolves
+only if `<id>` is a license or exception id on the SPDX License List. The list
+is the one bundled with the `cyclonedx-python-lib` dependency
+(`cyclonedx/schema/_res/spdx.SNAPSHOT.schema.json`; the license list version
+is in its `$comment`, 3.28.0 for `cyclonedx-python-lib` 11.12.0). Validation
+stays offline. To pick up a newer license list, upgrade
+`cyclonedx-python-lib` in `uv.lock` (`uv lock --upgrade-package
+cyclonedx-python-lib`) and rerun the tests.
 
 ## Rules pending a Qualcomm decision
 

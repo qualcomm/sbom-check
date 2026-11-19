@@ -102,12 +102,11 @@ _LICENSE_INDIVIDUALS = frozenset(
 )
 # SPDX License List entries are ListedLicense / ListedLicenseException
 # elements the license list itself defines, identified by IRIs in this
-# namespace with an SPDX idstring suffix. Documents reference them without
-# redefining them, so they resolve without a @graph entry. Recognition is
-# syntactic only; whether the id is on the current list is not checked.
-_LICENSE_LIST_IRI_PATTERN = re.compile(
-    r"https://spdx\.org/licenses/[A-Za-z0-9.+-]+", re.ASCII
-)
+# namespace with an SPDX license or exception id as the suffix. Documents
+# reference them without redefining them, so they resolve without a @graph
+# entry, provided the suffix is on the bundled SPDX License List (see
+# _is_listed_license_id).
+_LICENSE_LIST_IRI_PREFIX = "https://spdx.org/licenses/"
 # A single-package document has nothing to relate, so containment and
 # dependency relationships are only meaningful from two packages up.
 _MULTI_PACKAGE_THRESHOLD = 2
@@ -328,6 +327,30 @@ def _is_reference_shape(value: str) -> bool:
     )
 
 
+def _is_listed_license_id(license_id: str) -> bool:
+    """Check whether an id is on the bundled SPDX License List.
+
+    The list is the one shipped with the ``cyclonedx-python-lib``
+    dependency, so the check is offline and its version moves only when
+    that dependency is upgraded (see ``docs/profile-migration-notes.md``).
+    It covers license ids and license exception ids, including
+    deprecated ones, which remain valid list entries.
+
+    Args:
+        license_id: The candidate SPDX license or exception id. Matching
+            is case-sensitive, as the License List IRIs are.
+
+    Returns:
+        bool: True if ``license_id`` is a listed license or exception id.
+    """
+    # Imported here: loading the list costs tens of milliseconds, which
+    # SPDX 2.3 and CycloneDX runs should not pay.
+    # pylint: disable-next=import-outside-toplevel
+    from cyclonedx.spdx import is_supported_id  # noqa: PLC0415
+
+    return bool(is_supported_id(license_id))
+
+
 def _resolve_license_reference(doc: Spdx3Document, value: Any) -> _LicenseReference:
     """Resolve a license-valued reference to an AnyLicenseInfo element.
 
@@ -338,9 +361,9 @@ def _resolve_license_reference(doc: Spdx3Document, value: Any) -> _LicenseRefere
 
     Returns:
         _LicenseReference: ``RESOLVED`` when the value is an
-        AnyLicenseInfo element (inline, present in the graph, an SPDX
-        License List IRI, or one of the model's
-        ``NoneLicense``/``NoAssertionLicense`` individuals);
+        AnyLicenseInfo element (inline, present in the graph, the IRI of
+        a license or exception on the SPDX License List, or one of the
+        model's ``NoneLicense``/``NoAssertionLicense`` individuals);
         ``MALFORMED`` when it is not a reference at all; ``DANGLING``
         when it names no single element in the graph; ``WRONG_TYPE``
         when it names an element that is not AnyLicenseInfo.
@@ -357,7 +380,10 @@ def _resolve_license_reference(doc: Spdx3Document, value: Any) -> _LicenseRefere
     ):
         return _LicenseReference.MALFORMED
     if (element := doc.element_by_id(iri)) is None:
-        if iri in _LICENSE_INDIVIDUALS or _LICENSE_LIST_IRI_PATTERN.fullmatch(iri):
+        if iri in _LICENSE_INDIVIDUALS or (
+            iri.startswith(_LICENSE_LIST_IRI_PREFIX)
+            and _is_listed_license_id(iri[len(_LICENSE_LIST_IRI_PREFIX) :])
+        ):
             return _LicenseReference.RESOLVED
         return _LicenseReference.DANGLING
     if element.is_type(*_ANY_LICENSE_INFO_TYPES):

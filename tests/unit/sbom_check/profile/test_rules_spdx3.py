@@ -1285,6 +1285,60 @@ class TestInlineLicenseTypeSpellings:
         assert "does not identify an AnyLicenseInfo" in messages[0].message
 
 
+class TestLicenseListMembership:
+    """SPDX License List IRIs resolve only for ids actually on the list."""
+
+    @pytest.mark.parametrize(
+        "iri",
+        [
+            "https://spdx.org/licenses/MIT",
+            "https://spdx.org/licenses/Apache-2.0",
+            # Deprecated ids are still list entries.
+            "https://spdx.org/licenses/GPL-2.0+",
+            # License exceptions are list entries too.
+            "https://spdx.org/licenses/Classpath-exception-2.0",
+            "https://spdx.org/licenses/LLVM-exception",
+        ],
+    )
+    def test_listed_ids_resolve(self, iri: str) -> None:
+        """Real license and exception ids resolve without a @graph entry."""
+        doc = _copy(COMPLETE_DOC)
+        _element(doc, "SpdxDocument")["dataLicense"] = iri
+
+        assert DataLicenseRule().evaluate(doc, _context()) == []
+
+    @pytest.mark.parametrize(
+        "iri",
+        [
+            "https://spdx.org/licenses/NotARealLicenseId",
+            # The list is case-sensitive, like the IRIs it defines.
+            "https://spdx.org/licenses/mit",
+            "https://spdx.org/licenses/MIT.html",
+            "https://spdx.org/licenses/",
+        ],
+    )
+    def test_unlisted_ids_are_dangling(self, iri: str) -> None:
+        """A license-list IRI whose id is not on the list does not resolve."""
+        doc = _copy(COMPLETE_DOC)
+        _element(doc, "SpdxDocument")["dataLicense"] = iri
+
+        messages = DataLicenseRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert "not present in the document" in messages[0].message
+
+    def test_unlisted_relationship_target_is_reported(self) -> None:
+        """A fake license-list id cannot satisfy a license relationship."""
+        doc = _copy(COMPLETE_DOC)
+        for element in doc["@graph"]:
+            if element.get("relationshipType") == "hasDeclaredLicense":
+                element["to"] = ["https://spdx.org/licenses/NotARealLicenseId"]
+
+        messages = LicenseDeclaredRule().evaluate(doc, _context())
+        assert [m.found_value for m in messages] == [
+            "https://spdx.org/licenses/NotARealLicenseId"
+        ]
+
+
 SPDX_TERMS = "https://spdx.org/rdf/3.0.1/terms/"
 
 
