@@ -7,7 +7,8 @@ Each rule implements the :class:`~sbom_check.profile.registry.ProfileRule`
 protocol and maps one row of ``docs/spdx3-completeness-matrix.md`` that is
 marked ``EQUIVALENT``, ``REPRESENTED_DIFFERENTLY``, or ``CONDITIONAL``.
 Rules marked ``NEEDS_DECISION`` or ``NOT_APPLICABLE`` in that matrix are
-deliberately absent from this module.
+deliberately not implemented. ``NEEDS_DECISION`` rows are listed in
+:data:`SPDX3_PENDING_DECISION_RULES` so they are reported in coverage.
 
 Severity is never decided here: every message is constructed with
 :data:`~sbom_check.models.ValidationSeverity.ERROR` as a neutral
@@ -20,7 +21,8 @@ valid 3.0.1 encodings of a package URL -- the ``software_packageUrl``
 scalar property and an ``ExternalIdentifier`` element with
 ``externalIdentifierType: packageUrl`` -- and Qualcomm has not chosen
 between them (or decided to require both). Its absence from
-:data:`SPDX3_RULES` is deliberate, not an oversight.
+:data:`SPDX3_RULES` is deliberate, not an oversight; it is reported as
+pending instead.
 """
 
 from __future__ import annotations
@@ -84,8 +86,35 @@ SPDX3_RULES: tuple[ProfileRule, ...] = (
 )
 
 
+# Matrix rows marked NEEDS_DECISION. They have no implementation, but are
+# registered as pending so every run lists them in rule_coverage with a
+# pending-decision reason instead of leaving them out.
+SPDX3_PENDING_DECISION_RULES: dict[str, str] = {
+    "spdx3_completeness.package_originator": (
+        "Whether software_Package.originatedBy is required (matrix Open Question 2)."
+    ),
+    "spdx3_completeness.package_purl": (
+        "Which package URL shape is required: software_packageUrl, an "
+        "ExternalIdentifier of type packageUrl, or both (matrix Open "
+        "Question 5)."
+    ),
+    "spdx3_completeness.build_tools_coverage": (
+        "Whether and how build tooling must be represented in SPDX 3.0.1."
+    ),
+    "spdx3_completeness.vulnerability_info": (
+        "Whether vulnerability/VEX information is in scope (matrix Open Question 7)."
+    ),
+    "spdx3_completeness.provenance_info": (
+        "Whether build provenance is in scope (matrix Open Question 7)."
+    ),
+}
+
+
 def register_spdx3_rules(registry: ProfileRuleRegistry) -> None:
     """Register every SPDX 3.0.1 completeness rule with a registry.
+
+    Also records each requirement in :data:`SPDX3_PENDING_DECISION_RULES`
+    as pending, so it appears in coverage.
 
     Args:
         registry: The registry to register rules with, in document,
@@ -93,9 +122,12 @@ def register_spdx3_rules(registry: ProfileRuleRegistry) -> None:
     """
     for rule in SPDX3_RULES:
         registry.register(rule)
+    for rule_id, description in SPDX3_PENDING_DECISION_RULES.items():
+        registry.register_pending_decision(rule_id, description)
 
 
 __all__ = [
+    "SPDX3_PENDING_DECISION_RULES",
     "SPDX3_RULES",
     "CopyrightTextRule",
     "CreationTimestampRule",

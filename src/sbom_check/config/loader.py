@@ -33,13 +33,17 @@ def _unknown_completeness_rule_errors(config: SbomCheckConfig) -> list[str]:
     # Imported here to avoid a module-level cycle: the rules package
     # depends on the config models.
     from sbom_check.profile.rules_spdx3 import (  # noqa: PLC0415  # pylint: disable=import-outside-toplevel,cyclic-import
+        SPDX3_PENDING_DECISION_RULES,
         SPDX3_RULES,
     )
 
     known = {rule.rule_id for rule in SPDX3_RULES}
+    pending = set(SPDX3_PENDING_DECISION_RULES)
     configured = set(config.compliance_requirements.completeness_checks)
     unknown = sorted(
-        key for key in configured - known if key.startswith("spdx3_completeness.")
+        key
+        for key in configured - known - pending
+        if key.startswith("spdx3_completeness.")
     )
     return [
         f"Unknown completeness rule '{key}'; it will have no effect. "

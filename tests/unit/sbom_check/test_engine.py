@@ -22,7 +22,7 @@ from sbom_check.models import (
     SbomCheckResult,
     ValidationSeverity,
 )
-from sbom_check.profile.rules_spdx3 import SPDX3_RULES
+from sbom_check.profile.rules_spdx3 import SPDX3_PENDING_DECISION_RULES, SPDX3_RULES
 from spdx_validator.engine import ValidationEngine
 
 
@@ -762,14 +762,32 @@ def test_spdx3_document_does_not_pass_without_core_validation():
 
 
 def test_spdx3_profile_rules_run_and_report_coverage():
-    """Every registered SPDX 3 rule must be accounted for in coverage."""
+    """Every registered and pending SPDX 3 rule must be accounted for in coverage."""
     result = SbomCheckEngine().validate_dict(_spdx3_document())
 
-    assert len(result.rule_coverage) == len(SPDX3_RULES)
+    assert len(result.rule_coverage) == len(SPDX3_RULES) + len(
+        SPDX3_PENDING_DECISION_RULES
+    )
     assert {entry.rule_id for entry in result.rule_coverage} == {
         rule.rule_id for rule in SPDX3_RULES
-    }
+    } | set(SPDX3_PENDING_DECISION_RULES)
     assert result.has_unevaluated_rules() is False
+
+
+def test_spdx3_pending_decision_rows_are_visible_in_coverage():
+    """NEEDS_DECISION rows are reported with a pending-decision reason."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    pending = {
+        entry.rule_id: entry
+        for entry in result.rule_coverage
+        if entry.rule_id in SPDX3_PENDING_DECISION_RULES
+    }
+    assert set(pending) == set(SPDX3_PENDING_DECISION_RULES)
+    for entry in pending.values():
+        assert entry.outcome is RuleOutcome.SKIPPED
+        assert entry.reason is not None
+        assert "pending decision" in entry.reason
 
 
 def test_complete_spdx3_document_passes_profile_validation():

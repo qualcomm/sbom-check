@@ -325,3 +325,43 @@ def test_legacy_completeness_keys_are_not_treated_as_typos():
     _messages, coverage = registry.run(document={}, context=_context("2.3", config))
 
     assert [e for e in coverage if e.blocks_completeness] == []
+
+
+def test_pending_decision_rule_is_reported_skipped_with_reason():
+    """A pending requirement always appears in coverage, without blocking."""
+    registry = ProfileRuleRegistry()
+    registry.register_pending_decision("spdx3_completeness.pending", "Pending row.")
+    config = _config_with()
+
+    messages, coverage = registry.run(document={}, context=_context("3.0.1", config))
+
+    assert messages == []
+    assert len(coverage) == 1
+    assert coverage[0].rule_id == "spdx3_completeness.pending"
+    assert coverage[0].outcome is RuleOutcome.SKIPPED
+    assert coverage[0].blocks_completeness is False
+    assert "pending decision" in (coverage[0].reason or "")
+    assert coverage[0].description == "Pending row."
+
+
+def test_pending_decision_rule_enabled_in_config_fails_closed():
+    """Enabling a pending requirement asks for a check that cannot run."""
+    registry = ProfileRuleRegistry()
+    registry.register_pending_decision("spdx3_completeness.pending", "Pending row.")
+    config = _config_with(**{"spdx3_completeness.pending": CompletenessCheckRule()})
+
+    _messages, coverage = registry.run(document={}, context=_context("3.0.1", config))
+
+    assert [e.rule_id for e in coverage] == ["spdx3_completeness.pending"]
+    assert coverage[0].outcome is RuleOutcome.UNSUPPORTED
+    assert coverage[0].blocks_completeness is True
+
+
+def test_pending_decision_rule_id_cannot_collide_with_a_rule():
+    """A pending id may not reuse a registered rule's id."""
+    registry = ProfileRuleRegistry()
+    rule = PassingRule()
+    registry.register(rule)
+
+    with pytest.raises(ValueError, match=re.escape(rule.rule_id)):
+        registry.register_pending_decision(rule.rule_id, "dup")

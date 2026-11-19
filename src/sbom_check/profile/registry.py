@@ -66,6 +66,7 @@ class ProfileRuleRegistry:
     def __init__(self) -> None:
         """Initialize an empty, insertion-ordered rule registry."""
         self._rules: dict[str, ProfileRule] = {}
+        self._pending: dict[str, str] = {}
 
     def register(self, rule: ProfileRule) -> None:
         """Register a rule.
@@ -80,6 +81,33 @@ class ProfileRuleRegistry:
         if rule.rule_id in self._rules:
             raise ValueError(f"Rule with id {rule.rule_id!r} is already registered")
         self._rules[rule.rule_id] = rule
+
+    def register_pending_decision(self, rule_id: str, description: str) -> None:
+        """Record a requirement that is defined but awaits an owner decision.
+
+        A pending requirement has no implementation. It is listed so that
+        every run reports it in coverage, rather than leaving it out and
+        letting a result look complete without mentioning it.
+
+        Args:
+            rule_id: The stable rule identifier reserved for the requirement.
+            description: What the requirement would check.
+
+        Raises:
+            ValueError: If ``rule_id`` is already registered as a rule or
+                as a pending requirement.
+        """
+        if rule_id in self._rules or rule_id in self._pending:
+            raise ValueError(f"Rule with id {rule_id!r} is already registered")
+        self._pending[rule_id] = description
+
+    def pending_decision_ids(self) -> list[str]:
+        """List requirement ids awaiting an owner decision, in registration order.
+
+        Returns:
+            list[str]: The pending requirement ids.
+        """
+        return list(self._pending)
 
     def get(self, rule_id: str) -> ProfileRule | None:
         """Look up a registered rule by id.
@@ -128,17 +156,68 @@ class ProfileRuleRegistry:
                     "configured rule is not registered; check the rule ID for a typo"
                 ),
             )
-            for unknown in sorted(configured - set(self._rules))
+            for unknown in sorted(configured - set(self._rules) - set(self._pending))
             if unknown.startswith("spdx3_completeness.")
         ]
+
+    def _pending_decision_coverage(self, context: RuleContext) -> list[RuleCoverage]:
+        """Report every requirement that awaits an owner decision.
+
+        Each pending requirement gets an entry so results show it was not
+        checked and why. By default the entry is ``skipped`` and does not
+        block, because whether a pending requirement should block is
+        itself one of the open owner decisions. A profile that explicitly
+        enables a pending ID asked for a check that cannot run, so that
+        case is ``unsupported`` and fails closed, like any other enabled
+        rule with no implementation.
+
+        Args:
+            context: Execution context carrying the effective config.
+
+        Returns:
+            list[RuleCoverage]: One entry per pending requirement.
+        """
+        checks = context.config.compliance_requirements.completeness_checks
+        coverage: list[RuleCoverage] = []
+        for rule_id, description in self._pending.items():
+            cfg = checks.get(rule_id)
+            if cfg is not None and cfg.enabled:
+                coverage.append(
+                    RuleCoverage(
+                        rule_id=rule_id,
+                        outcome=RuleOutcome.UNSUPPORTED,
+                        severity=cfg.severity,
+                        description=cfg.description or description,
+                        reason=(
+                            "enabled by configuration, but not implemented: "
+                            "the requirement is pending a decision by the "
+                            "Qualcomm SBOM owners"
+                        ),
+                    )
+                )
+                continue
+            coverage.append(
+                RuleCoverage(
+                    rule_id=rule_id,
+                    outcome=RuleOutcome.SKIPPED,
+                    severity=None,
+                    description=description,
+                    reason=(
+                        "pending decision: the requirement mapping awaits a "
+                        "decision by the Qualcomm SBOM owners, so this "
+                        "document was not checked against it"
+                    ),
+                )
+            )
+        return coverage
 
     def run(
         self, document: Any, context: RuleContext
     ) -> tuple[list[ValidationMessage], list[RuleCoverage]]:
         """Run all registered rules against a document.
 
-        For each registered rule, exactly one ``RuleCoverage`` entry is
-        produced. Precedence: disabled config skips evaluation (does not
+        For each registered rule, and each requirement pending an owner
+        decision, exactly one ``RuleCoverage`` entry is produced. Precedence: disabled config skips evaluation (does not
         block completeness); not applicable to the document's spec
         version is recorded as not-applicable (does not block); no rule
         implementation for the version, or an explicit
@@ -160,6 +239,7 @@ class ProfileRuleRegistry:
         coverage_list: list[RuleCoverage] = []
 
         coverage_list.extend(self._unknown_rule_coverage(context))
+        coverage_list.extend(self._pending_decision_coverage(context))
 
         for rule in self.rules():
             cfg = context.config.compliance_requirements.completeness_checks.get(
