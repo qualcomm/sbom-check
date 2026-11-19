@@ -255,9 +255,11 @@ def _default_spdx3_completeness_checks() -> dict[str, CompletenessCheckRule]:
     SPDX 2.3 default-profile behavior is unaffected.
 
     Returns:
-        dict[str, CompletenessCheckRule]: Mapping of the 21 approved
+        dict[str, CompletenessCheckRule]: Mapping of the 21 implemented
         ``spdx3_completeness.*`` rule ids to their enabled, supported
-        configuration.
+        configuration. These rules and their default-on state are
+        proposed, awaiting owner approval; see the matrix's approval
+        record.
     """
 
     def _rule(
