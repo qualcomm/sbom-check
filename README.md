@@ -6,7 +6,7 @@ SPDX-License-Identifier: BSD-3-Clause
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 
-A multi-format SBOM validator supporting SPDX 2.3, SPDX 3.0.1, and CycloneDX JSON documents. SPDX 2.3 documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation. SPDX 3.0.1 documents are detected and reported, with core validation and Qualcomm completeness rules still in progress — see [SPDX 3.0.1 Documents](#spdx-301-documents).
+A multi-format SBOM validator supporting SPDX 2.3, SPDX 3.0.1, and CycloneDX JSON documents. SPDX 2.3 documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation. SPDX 3.0.1 documents receive the proposed Qualcomm completeness rules (pending owner approval), while core validation is still in progress — see [SPDX 3.0.1 Documents](#spdx-301-documents).
 
 ## Features
 
@@ -134,27 +134,30 @@ it lands, SBOM-Check reports `core_valid: false` with the rule
 not check. Use a tool that implements the SPDX 3.0.1 schema and SHACL checks
 to confirm specification conformance.
 
-**Qualcomm completeness rules are pending approval.** The requirement mapping
-from SPDX 2.3 to SPDX 3.0.1 is proposed in
+**Qualcomm completeness rules are pending owner approval.** The requirement
+mapping from SPDX 2.3 to SPDX 3.0.1 is proposed in
 [`docs/spdx3-completeness-matrix.md`](docs/spdx3-completeness-matrix.md) and
-awaits sign-off from the Qualcomm SBOM owners. Rules that have no approved
-mapping are reported as unsupported rather than skipped silently, so an SPDX
-3.0.1 document is never reported complete on the strength of checks that never
-ran. Profile status is `skipped` in that case — not `passed`, and not `failed`,
-because the profile did not fail, it could not be evaluated:
+awaits sign-off from the Qualcomm SBOM owners. Currently, `--profile default`
+enables the 21 implemented rules (14 errors, 7 warnings). Whether they stay
+enabled by default before approval is an open decision for those owners;
+see the matrix's status section.
+
+Rows the matrix marks `NEEDS_DECISION` are not implemented. They are not
+skipped silently: each one appears in `rule_coverage` as `skipped` with a
+pending-decision reason. If a profile enables one anyway, it is reported
+`unsupported` and blocks, so an SPDX 3.0.1 document is never reported
+complete on the strength of a check that never ran:
 
 ```json
 {
   "document_format": "SPDX3",
   "spec_version": "3.0.1",
-  "overall_valid": false,
-  "core_valid": false,
-  "profile_status": "skipped",
+  "profile_status": "passed",
   "rule_coverage": [
     {
-      "rule_id": "spdx3_completeness",
-      "outcome": "unsupported",
-      "reason": "Qualcomm completeness rules for SPDX 3.0.1 are not implemented yet, so this document was not checked against the Qualcomm profile."
+      "rule_id": "spdx3_completeness.package_purl",
+      "outcome": "skipped",
+      "reason": "pending decision: the requirement mapping awaits a decision by the Qualcomm SBOM owners, so this document was not checked against it"
     }
   ]
 }

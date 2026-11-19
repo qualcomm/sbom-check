@@ -30,13 +30,15 @@ before and after the change; the output is byte-identical.
 
 **SPDX 3.0.1 documents validated with `--profile default` now report
 completeness failures that previously went unchecked.** The default profile
-enables all eighteen implemented rules — fourteen as errors, four as
+enables all twenty-one implemented rules — fourteen as errors, seven as
 warnings. A document that previously reported no profile findings may now
 fail.
 
-This was a deliberate decision, recorded in matrix Open Question 1: a
-supplier submitting an SPDX 3.0.1 SBOM should be held to the same
-completeness requirements as one submitting SPDX 2.3.
+Default-on is the **proposal** in matrix Open Question 1, not an approved
+decision. The matrix's approval gate says no rule should ship enabled before
+its row is approved, and the approval record is still empty. The Qualcomm
+SBOM owners decide which applies. If they choose opt-in, these rules will be
+shipped disabled instead and this section will change.
 
 To opt out while you adjust, disable the rules in your own config:
 
@@ -95,7 +97,7 @@ active rules.
 
 Overriding one rule leaves the rest at their defaults — the merge only
 descends into keys present in both configurations. Overriding
-`spdx3_completeness.package_supplier` does not drop the other seventeen
+`spdx3_completeness.package_supplier` does not drop the other twenty
 rules.
 
 ## Output changes
@@ -167,7 +169,15 @@ findings are actionable now. To see profile results in isolation, read
 ## Rules pending a Qualcomm decision
 
 Matrix rows marked `NEEDS_DECISION` are not implemented and ship no
-configuration entry. Most consequential is
+configuration entry. So that they are not silently left out, each appears in
+`rule_coverage` on every SPDX 3.0.1 run with outcome `skipped` and a reason
+beginning `pending decision`. They do not block. If you enable one in your
+own configuration, it is reported `unsupported` and blocks, because the check
+you asked for cannot run. The five rows are `package_originator`,
+`package_purl`, `build_tools_coverage`, `vulnerability_info` and
+`provenance_info`.
+
+Most consequential is
 `spdx3_completeness.package_purl`: SPDX 3.0.1 permits both a
 `software_packageUrl` property and an `ExternalIdentifier` of type
 `packageUrl`, and a conforming document may use either. Requiring one would

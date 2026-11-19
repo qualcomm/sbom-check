@@ -5,11 +5,18 @@
 - **Document status:** This is a decision document, not an implementation record. Nothing in
   it has been approved. It exists to get a row-by-row sign-off from the Qualcomm SBOM owners
   before any SPDX 3.0.1 completeness rule is enabled.
-- **Default behavior until approved:** every row in this matrix ships **disabled** in
-  configuration. No `spdx3_completeness.*` rule may be turned on for any shipped profile
-  (including `default`) until the corresponding row is explicitly approved below. Rows marked
-  `NEEDS_DECISION` must additionally never be able to make a document silently "pass" — see
-  Open Question 4.
+- **Approval gate:** no `spdx3_completeness.*` rule should ship enabled in a released profile
+  (including `default`) until the corresponding row is explicitly approved in Section 8.
+- **Current state of the implementation (not a decision):** the change that introduces this
+  matrix enables the 21 implemented rows in the `default` profile, 14 as ERROR and 7 as
+  WARNING, as the proposal in Open Question 1 describes. That conflicts with the approval gate
+  above. It is left for the SBOM owners to resolve: approve the rows (and default-on), or have
+  the rules shipped opt-in until they are approved. The change must not be released with this
+  conflict unresolved.
+- **`NEEDS_DECISION` rows** are not implemented. Each one is listed in `rule_coverage` on every
+  SPDX 3.0.1 run, with outcome `skipped` and a "pending decision" reason. That way they are
+  visible and not silently left out. If a profile explicitly enables one, it is reported
+  `unsupported` and blocks. Whether a pending row should block by default is Open Question 4.
 
 ---
 
@@ -68,7 +75,7 @@ This is a factual summary, not an opinion, used to justify the classifications b
 | `REPRESENTED_DIFFERENTLY` | Same intent, but the 3.0.1 model expresses it as a different shape (an element, a relationship, or a differently-named/namespaced property) rather than a flat field. | Implement against the 3.0.1 shape (traverse `@graph` for the relevant element/relationship type), not as a field lookup. |
 | `CONDITIONAL` | Applies only to certain element types or contexts and needs a stated business rule to know when it applies. | Implement only with the applicability rule written out explicitly; do not apply unconditionally. |
 | `NOT_APPLICABLE` | The 2.3 concept does not exist in the 3.0.1 object model. | Do not implement for SPDX 3.0.1. Record why in the matrix; do not silently drop the row from documentation. |
-| `NEEDS_DECISION` | Cannot be mapped without a Qualcomm product decision (policy choice, not a structural fact). | Ships disabled. Must never allow a document to be reported "complete" by omission — see Open Question 4 for the required disabled-row behavior. |
+| `NEEDS_DECISION` | Cannot be mapped without a Qualcomm product decision (policy choice, not a structural fact). | Not implemented. Reported in `rule_coverage` as `skipped` with a pending-decision reason, so it is never silently omitted; `unsupported` (blocking) if a profile enables it. See Open Question 4 for the final disabled-row behavior. |
 
 ---
 
@@ -89,7 +96,7 @@ or config field exists, that is stated explicitly rather than implied.
 | `spdx3_completeness.creation_timestamp` | `missing_required_field` / `invalid_field_value` (`creationInfo.created`, ISO-8601 UTC pattern) | `CreationInfo.created` | EQUIVALENT | ERROR | Same property, same intent, still on a `CreationInfo` element rather than nested document JSON, but the lookup is a direct field read. |
 | `spdx3_completeness.creators` | `missing_required_field` (`creationInfo.creators`) | `CreationInfo.createdBy` referencing `Agent`/`Organization` graph elements | REPRESENTED_DIFFERENTLY | ERROR | 2.3 stores creators as strings (`"Tool: X"`, `"Organization: Y"`) inline; 3.0.1 requires real `Agent`/`Organization` elements linked via `createdBy`, so the check becomes "does `createdBy` resolve to at least one such element" rather than a string-count check. |
 | `spdx3_completeness.spec_version` | `invalid_field_value` (`spdxVersion` exact value `SPDX-2.3`) | `CreationInfo.specVersion` | REPRESENTED_DIFFERENTLY | ERROR | Same intent (pin the spec version), but 3.0.1 has no top-level `spdxVersion` field; the value lives on `CreationInfo.specVersion` and the expected exact value becomes `3.0.1`. |
-| `spdx3_completeness.data_license` | `invalid_field_value` (`dataLicense` exact value `CC0-1.0`) | `dataLicense` on `SpdxDocument` (`Core/dataLicense`, range `SimpleLicensing/AnyLicenseInfo`, `sh:maxCount 1`, IRI-valued) | REPRESENTED_DIFFERENTLY | ERROR | Verified against `spdx-model.ttl`: `dataLicense` **does** exist in 3.0.1 on `SpdxDocument`. The difference is shape, not existence: 2.3 compares a literal string to `CC0-1.0`, whereas 3.0.1 requires an IRI reference to an `AnyLicenseInfo` element, so the check must resolve the referenced license element rather than string-compare. Note it is optional in 3.0.1 (`maxCount 1`, no `minCount`), unlike 2.3 where it is mandatory. |
+| `spdx3_completeness.data_license` | `invalid_field_value` (`dataLicense` exact value `CC0-1.0`) | `dataLicense` on `SpdxDocument` (`Core/dataLicense`, range `SimpleLicensing/AnyLicenseInfo`, `sh:maxCount 1`, IRI-valued) | REPRESENTED_DIFFERENTLY | ERROR | Verified against `spdx-model.ttl`: `dataLicense` **does** exist in 3.0.1 on `SpdxDocument`. The difference is shape, not existence: 2.3 compares a literal string to `CC0-1.0`, whereas 3.0.1 requires an IRI reference to an `AnyLicenseInfo` element, so the check must resolve the referenced license element rather than string-compare. Note it is optional in 3.0.1 (`maxCount 1`, no `minCount`), unlike 2.3 where it is mandatory. Accepted targets: an `AnyLicenseInfo` element in the `@graph`, an SPDX License List IRI (`https://spdx.org/licenses/<id>`), or the model's `NoneLicense`/`NoAssertionLicense` individuals. Missing, malformed, dangling and wrong-type values are reported separately. |
 | `spdx3_completeness.license_list_version` | `missing_required_field` (`creationInfo.licenseListVersion`) | `simplelicensing_licenseListVersion` on each `simplelicensing_LicenseExpression` element (`SimpleLicensing/licenseListVersion`, `xsd:string`, `sh:maxCount 1`, semver-patterned) | REPRESENTED_DIFFERENTLY | WARNING | Verified against `spdx-model.ttl`: the property is declared on the **`LicenseExpression`** shape, not on `CreationInfo`. In 2.3 the licence-list version is document-level creation metadata; in 3.0.1 it is per-licence-expression and optional, so there is no single document-wide value to require. The check therefore applies per `LicenseExpression` element. Proposed advisory for that reason — see Open Question 6. |
 
 ### Package & component metadata
@@ -127,7 +134,7 @@ or config field exists, that is stated explicitly rather than implied.
 |---|---|---|---|---|---|
 | `spdx3_completeness.package_identifier` | `missing_package_field` (`SPDXID`) | `software_Package.spdxId` (IRI) | REPRESENTED_DIFFERENTLY | ERROR | Same identity concept, same IRI-collapse reasoning as the document identifier row. |
 | `spdx3_completeness.package_purl` | `missing_external_ref` (`referenceType: purl`, config: `ExternalRefsConfig.required_types`) | **Two valid shapes, both verified to exist:** (a) the `software_packageUrl` property (`Software/packageUrl`, `xsd:anyURI`) directly on the package, or (b) an `externalIdentifier` → `ExternalIdentifier` element with `externalIdentifierType: packageUrl` | NEEDS_DECISION | n/a (disabled) | The ambiguity here is **policy, not fact**: both shapes are confirmed present in the 3.0.1 model, and a conforming document may use either. A supplier could satisfy one and not the other. Qualcomm must decide whether to accept either, require one specifically, or require both — see Open Question 5. Note the enum member is spelled `packageUrl`, not `purl`. |
-| `spdx3_completeness.package_cpe` | `missing_external_ref` is the rule_id family; CPE itself is only in `ExternalRefsConfig.conditional_types` (`reference_type: cpe23Type`, `required_when: official_cpe_exists`), not currently wired to an enforced rule_id | `externalIdentifier` → `ExternalIdentifier` element with `externalIdentifierType: cpe23` (verified; `cpe22` also exists as a separate member) | CONDITIONAL | WARNING | Already conditional in 2.3 config (only required when an official CPE exists); the same conditionality should carry over rather than becoming unconditional. See Open Question 3. |
+| `spdx3_completeness.package_cpe` | `missing_external_ref` is the rule_id family; CPE itself is only in `ExternalRefsConfig.conditional_types` (`reference_type: cpe23Type`, `required_when: official_cpe_exists`), not currently wired to an enforced rule_id | `externalIdentifier` → `ExternalIdentifier` element with `externalIdentifierType: cpe23` (verified; `cpe22` also exists as a separate member) | CONDITIONAL | WARNING | Already conditional in 2.3 config (only required when an official CPE exists). **Implemented scope is narrower:** the rule validates declared CPE entries only (a declared `cpe23`/`cpe22` identifier must be non-empty). It does not detect whether an official CPE exists and does not require one, because that cannot be decided from the SBOM and the condition is still Open Question 3. |
 
 ### Build tools & generated components
 
@@ -144,7 +151,7 @@ or config field exists, that is stated explicitly rather than implied.
 | `spdx3_completeness.files_analyzed_false` | `files_analyzed_prohibited_field` (`FilesAnalyzedRule.when_false_prohibits`) | — | NOT_APPLICABLE | n/a | Same reasoning as above — there is no `filesAnalyzed: false` state to prohibit fields against in 3.0.1. |
 | `spdx3_completeness.package_verification_code` | None today — `packageVerificationCode` has no rule_id in `engine.py` and no field in `SbomCheckConfig`. | `verifiedUsing` → a `PackageVerificationCode` element (`Core/PackageVerificationCode`, `rdfs:subClassOf Core/IntegrityMethod`, carrying `hashValue`, `algorithm`, and `packageVerificationCodeExcludedFile`) | REPRESENTED_DIFFERENTLY | WARNING | Verified against `spdx-model.ttl`: the concept **is retained** in 3.0.1, as a class the spec itself annotates "An SPDX version 2.X compatible verification method for software packages." It is no longer a scalar field on the package but an `IntegrityMethod` element reached via `verifiedUsing`. Proposed advisory because no 2.3 rule enforces it today, so requiring it would be a new requirement rather than a port. |
 | `spdx3_completeness.dependency_relationships` | No enforced rule today — `RelationshipRequirementsConfig.required_relationships` exists as a config shape but `create_default()` leaves it empty, so no `CONTAINS`/`DEPENDS_ON` requirement is enforced in the shipped default profile. | `Relationship` elements with `relationshipType: contains` / `dependsOn` | REPRESENTED_DIFFERENTLY | WARNING | The structural mapping (flat relationship entries → `Relationship` elements) is clear. What is not yet decided is whether to start enforcing dependency-relationship completeness by default when 2.3 never did — flagged for owner awareness, not because the mapping itself is in doubt. |
-| `spdx3_completeness.no_isolated_elements` | `RelationshipRequirementsConfig.no_isolated_elements` (today only partially enforced via the `missing_describes_relationship` check; a full isolated-element graph walk is not implemented in `engine.py`) | Every graph element must be reachable from the `SpdxDocument` via some `Relationship` chain (or listed under `rootElement`) | REPRESENTED_DIFFERENTLY | WARNING | Same policy intent as 2.3, but a full implementation requires walking the `@graph` relationship edges rather than scanning one flat array. |
+| `spdx3_completeness.no_isolated_elements` | `RelationshipRequirementsConfig.no_isolated_elements` (today only partially enforced via the `missing_describes_relationship` check; a full isolated-element graph walk is not implemented in `engine.py`) | Every software artifact element — `software_Package`, `software_File`, `software_Snippet` — must be reachable from the `SpdxDocument` via some `Relationship` chain (or listed under `rootElement`) | REPRESENTED_DIFFERENTLY | WARNING | Same policy intent as 2.3, where the requirement covers packages, files and snippets; a full implementation walks the `@graph` relationship edges rather than scanning one flat array. **Explicitly exempt:** element types that SPDX 3.0.1 links by property rather than by `Relationship`, and which a relationship walk would therefore misreport — agents (`createdBy`, `suppliedBy`, `originatedBy`), license elements (`dataLicense`, license-set `member`), `CreationInfo` (`creationInfo`), and the `SpdxDocument` and `Relationship` elements themselves (the root and the edges of the walk). |
 
 ### Vulnerability & provenance
 
@@ -212,7 +219,9 @@ default-profile question.
    -severity message stating the rule is pending a Qualcomm decision so it is visible but
    non-blocking, or (c) something else? A document must never be reported "complete"
    while a `NEEDS_DECISION` row is silently skipped — which of these satisfies that
-   for you?
+   for you? *Current implementation, pending your answer:* each row is listed in
+   `rule_coverage` as `skipped` with a pending-decision reason (visible, non-blocking); it
+   becomes `unsupported` (blocking) only if a profile enables it.
 5. For `spdx3_completeness.package_purl`, should validation target the `software_packageUrl`
    property, an `ExternalIdentifier` element with `externalIdentifierType: purl`, or both?
 6. For `spdx3_completeness.license_list_version`, is tracking the SPDX license-list version a
