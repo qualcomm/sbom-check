@@ -3,6 +3,7 @@
 
 """Unit tests for the SPDX 3 validator CLI."""
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -73,11 +74,11 @@ def test_batch_continues_when_one_file_has_structured_input_error(tmp_path):
     assert "spdx3_validation_input_error" in result.output
 
 
-def test_worker_reuses_remote_failure_without_masking_local_errors(tmp_path):
+def test_worker_reuses_remote_failure_without_masking_local_errors(
+    tmp_path, minimal_spdx3_document
+):
     """Cache a valid document's outage but still report later local errors."""
-    valid_document = (
-        Path(__file__).resolve().parents[2] / "fixtures" / "minimal-spdx3.0.1.spdx.json"
-    ).read_text(encoding="utf-8")
+    valid_document = json.dumps(minimal_spdx3_document)
     (tmp_path / "a-first.spdx.json").write_text(valid_document, encoding="utf-8")
     (tmp_path / "b-second.spdx.json").write_text(valid_document, encoding="utf-8")
     (tmp_path / "c-missing-context.spdx.json").write_text("{}", encoding="utf-8")

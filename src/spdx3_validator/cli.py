@@ -12,9 +12,10 @@ from typing import Any
 import click
 
 from sbom_validator.cli_utils import collect_spdx_files, output_text_multiple
-from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+from sbom_validator.models import has_remote_resource_failure
 from sbom_validator.network import configure_network_timeout
-from spdx3_validator.engine import ValidationEngine, enable_remote_failure_reuse
+from sbom_validator.remote_failures import enable_remote_failure_reuse
+from spdx3_validator.engine import ValidationEngine
 from spdx3_validator.models import ValidationResult, ValidationSeverity
 
 REMOTE_RESOURCE_FAILURE_EXIT_CODE = 4
@@ -24,14 +25,6 @@ def _initialize_worker() -> None:
     """Configure network access and reset the worker's resource-failure cache."""
     configure_network_timeout()
     enable_remote_failure_reuse()
-
-
-def _has_remote_resource_failure(result: ValidationResult) -> bool:
-    """Return whether validation could not run because a remote resource failed."""
-    return any(
-        message.rule_id == REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
-        for message in result.messages
-    )
 
 
 def validate_single_file(
@@ -197,7 +190,7 @@ def main(
         results.append((file_path, result))
         if not result.is_valid:
             overall_valid = False
-        remote_resource_failure = _has_remote_resource_failure(result)
+        remote_resource_failure = has_remote_resource_failure(result)
     else:
         # Multiple files - use parallel processing
         with ProcessPoolExecutor(
@@ -216,7 +209,7 @@ def main(
                 results.append((file_path, result))
                 if not result.is_valid:
                     overall_valid = False
-                if _has_remote_resource_failure(result):
+                if has_remote_resource_failure(result):
                     remote_resource_failure = True
 
         # Sort results by file path for consistent output

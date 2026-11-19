@@ -32,16 +32,20 @@ from sbom_check.models import (
 )
 
 
-def test_importing_cli_does_not_import_spdx3_dependencies() -> None:
-    """Keep SPDX 3 dependencies out of the generic CLI startup path."""
+def test_worker_setup_and_spdx2_validation_do_not_import_spdx3_dependencies(
+    temp_spdx_file: Path,
+) -> None:
+    """Keep SPDX 3 dependencies out of generic worker setup and SPDX 2 runs."""
+    code = (
+        "import sys; from pathlib import Path; import sbom_check.cli as c; "
+        "from sbom_check.config.loader import ConfigLoader; "
+        "c._initialize_worker(ConfigLoader().load_profile('default')); "
+        f"c.validate_single_file(Path({str(temp_spdx_file)!r}), 'default', None); "
+        "assert 'pyshacl' not in sys.modules; "
+        "assert 'spdx3_validator.engine' not in sys.modules"
+    )
     result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            "import sys; import sbom_check.cli; "
-            "assert 'pyshacl' not in sys.modules; "
-            "assert 'spdx3_validator.engine' not in sys.modules",
-        ],
+        [sys.executable, "-c", code],
         capture_output=True,
         check=False,
         text=True,
@@ -368,11 +372,11 @@ def test_cli_remote_resource_failure_has_distinct_exit_code(tmp_path):
     assert cli_result.exit_code == 4
 
 
-def test_cli_engine_reuses_remote_failure_without_masking_local_errors(tmp_path):
+def test_cli_engine_reuses_remote_failure_without_masking_local_errors(
+    tmp_path, minimal_spdx3_document
+):
     """Keep non-canonical SPDX 3 contexts local after a remote outage."""
-    valid_document = (
-        Path(__file__).resolve().parents[2] / "fixtures" / "minimal-spdx3.0.1.spdx.json"
-    ).read_text(encoding="utf-8")
+    valid_document = json.dumps(minimal_spdx3_document)
     (tmp_path / "a-first.spdx.json").write_text(valid_document, encoding="utf-8")
     (tmp_path / "b-second.spdx.json").write_text(valid_document, encoding="utf-8")
     (tmp_path / "c-noncanonical-context.spdx.json").write_text(

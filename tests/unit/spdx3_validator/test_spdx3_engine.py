@@ -20,8 +20,8 @@ from spdx3_validate.core import (
     ValidationResult as CustomValidationResult,
 )
 
-import spdx3_validator.engine as spdx3_engine
-from spdx3_validator.engine import ValidationEngine, enable_remote_failure_reuse
+from sbom_validator.remote_failures import enable_remote_failure_reuse
+from spdx3_validator.engine import ValidationEngine
 from spdx3_validator.models import ValidationResult
 from spdx3_validator.resources import (
     SPDX_CONTEXT_URL,
@@ -36,16 +36,6 @@ def _clear_resource_caches() -> None:
     _load_schema_validator.cache_clear()
     _load_shacl_graph.cache_clear()
     _get_spdx_version.cache_clear()
-
-
-@pytest.fixture(autouse=True)
-def reset_remote_failure_reuse():
-    """Keep process-local circuit-breaker state isolated between engine tests."""
-    spdx3_engine._remote_failure_state.reuse_enabled = False
-    spdx3_engine._remote_failure_state.failure = None
-    yield
-    spdx3_engine._remote_failure_state.reuse_enabled = False
-    spdx3_engine._remote_failure_state.failure = None
 
 
 class TestValidationEngine:
@@ -76,6 +66,45 @@ class TestValidationEngine:
         assert cached_first.messages is not cached_second.messages
         assert first.messages[0].rule_id == "remote_resource_unavailable"
         assert second.messages[0].rule_id == "remote_resource_unavailable"
+
+    def test_remote_failure_cache_is_keyed_by_enabled_validation_stages(self):
+        """Do not reuse failures across engines with different validation stages."""
+        enable_remote_failure_reuse()
+        document = {"@context": SPDX_CONTEXT_URL}
+        full_engine = ValidationEngine()
+        schema_only_engine = ValidationEngine(enable_semantic_validation=False)
+        no_op_engine = ValidationEngine(
+            enable_schema_validation=False,
+            enable_semantic_validation=False,
+        )
+
+        with (
+            patch.object(
+                full_engine,
+                "_validate_document",
+                side_effect=URLError("full-stage outage"),
+            ) as full_validation,
+            patch.object(
+                schema_only_engine,
+                "_validate_document",
+                side_effect=URLError("schema-only outage"),
+            ) as schema_validation,
+        ):
+            full_result = full_engine.validate_dict(document)
+            schema_result = schema_only_engine.validate_dict(document)
+            no_op_result = no_op_engine.validate_dict(document)
+            full_cached = full_engine.validate_dict(document)
+            schema_cached = schema_only_engine.validate_dict(document)
+
+        assert "full-stage outage" in full_result.messages[0].message
+        assert "schema-only outage" in schema_result.messages[0].message
+        assert "full-stage outage" in full_cached.messages[0].message
+        assert "schema-only outage" in schema_cached.messages[0].message
+        assert full_validation.call_count == 1
+        assert schema_validation.call_count == 1
+        assert no_op_result.is_valid is True
+        assert no_op_result.schema_valid is None
+        assert no_op_result.semantic_valid is None
 
     def test_nested_context_scan_handles_deep_values(self):
         """Traverse deeply nested JSON-LD iteratively without recursion errors."""
@@ -367,10 +396,14 @@ class TestValidationEngine:
         assert cached_result.messages[0].rule_id == "remote_resource_unavailable"
         load_resources.assert_called_once()
         assert message == (
-            "SPDX validation could not be completed because a required remote "
-            "resource was unavailable: SpdxValidateError: "
-            "Invalid schema https://spdx.org/schema/3.0.1/spdx-json-schema.json: "
-            "unexpected schema type"
+            "SPDX validation could not be completed because a required validation "
+            "resource could not be loaded: SpdxValidateError: Invalid schema "
+            "https://spdx.org/schema/3.0.1/spdx-json-schema.json: unexpected "
+            "schema type"
+        )
+        assert result.messages[0].remediation == (
+            "Check the installed SPDX validator and required resource configuration; "
+            "if the issue persists, report it to the tool maintainer."
         )
 
     def test_unknown_spdx_version_resource_failure_preserves_cause_details(self):
@@ -393,8 +426,9 @@ class TestValidationEngine:
         message = result.messages[0].message
         assert result.messages[0].rule_id == "remote_resource_unavailable"
         assert message == (
-            "SPDX validation could not be completed because a required remote "
-            "resource was unavailable: SpdxValidateError: Unknown SPDX version 3.0.1"
+            "SPDX validation could not be completed because a required validation "
+            "resource could not be loaded: SpdxValidateError: Unknown SPDX version "
+            "3.0.1"
         )
 
     @pytest.mark.parametrize(

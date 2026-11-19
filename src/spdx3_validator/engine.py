@@ -5,11 +5,10 @@
 
 import json
 from copy import deepcopy
-from dataclasses import dataclass
 from http.client import HTTPException
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.error import URLError
 
 import requests
@@ -26,7 +25,11 @@ from spdx3_validate.core import ValidationResult as CustomValidationResult
 from spdx3_validate.spdx_versions import find_version
 
 from sbom_validator.engine import ValidatorEngine
-from sbom_validator.models import REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
+from sbom_validator.models import (
+    REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
+    has_remote_resource_failure,
+)
+from sbom_validator.remote_failures import remote_failure_state
 from spdx3_validator.diagnostics import ShaclDiagnosticParser
 from spdx3_validator.models import (
     ValidationMessage,
@@ -39,23 +42,6 @@ from spdx3_validator.resources import (
     ValidationResources,
     load_validation_resources,
 )
-
-
-@dataclass
-class _RemoteFailureState:
-    """Process-local opt-in and cached result for remote resource failures."""
-
-    reuse_enabled: bool = False
-    failure: ValidationResult | None = None
-
-
-_remote_failure_state = _RemoteFailureState()
-
-
-def enable_remote_failure_reuse() -> None:
-    """Enable per-process reuse of remote resource failures and clear old state."""
-    _remote_failure_state.reuse_enabled = True
-    _remote_failure_state.failure = None
 
 
 class _ResourceLoadError(Exception):
@@ -263,19 +249,19 @@ class ValidationEngine(ValidatorEngine):
         )
 
     def _validate(self, document: dict[str, Any]) -> ValidationResult:
-        """Validate after local checks, reusing a worker's remote outage if enabled."""
-        if (
-            _remote_failure_state.reuse_enabled
-            and _remote_failure_state.failure is not None
-        ):
-            return deepcopy(_remote_failure_state.failure)
+        """Validate after local checks, reusing an outage for the same stages."""
+        cache_key = (
+            self.enable_schema_validation,
+            self.enable_semantic_validation,
+        )
+        if remote_failure_state.reuse_enabled and (
+            cached_failure := remote_failure_state.failures.get(cache_key)
+        ) is not None:
+            return cast("ValidationResult", deepcopy(cached_failure))
 
         result = self._validate_once(document)
-        if _remote_failure_state.reuse_enabled and any(
-            message.rule_id == REMOTE_RESOURCE_UNAVAILABLE_RULE_ID
-            for message in result.messages
-        ):
-            _remote_failure_state.failure = deepcopy(result)
+        if remote_failure_state.reuse_enabled and has_remote_resource_failure(result):
+            remote_failure_state.failures[cache_key] = deepcopy(result)
         return result
 
     def _validate_once(  # pylint: disable=too-many-return-statements,too-many-branches  # noqa: PLR0911
@@ -332,13 +318,14 @@ class ValidationEngine(ValidatorEngine):
                         severity=ValidationSeverity.ERROR,
                         message=(
                             "SPDX validation could not be completed because a "
-                            "required remote resource was unavailable: "
+                            "required validation resource could not be loaded: "
                             f"{detail}"
                         ),
                         rule_id=REMOTE_RESOURCE_UNAVAILABLE_RULE_ID,
                         remediation=(
-                            "Make the required SPDX validation resources available "
-                            "and run validation again."
+                            "Check the installed SPDX validator and required "
+                            "resource configuration; if the issue persists, "
+                            "report it to the tool maintainer."
                         ),
                     )
                 ],

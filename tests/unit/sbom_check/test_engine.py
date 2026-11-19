@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 import pytest
 from spdx3_validate.core import ValidationResult as CustomValidationResult
 
-import spdx3_validator.engine as spdx3_engine
 from cyclone_validator.engine import CycloneDXValidationEngine
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.detection import DetectedDocument
@@ -23,16 +22,6 @@ from sbom_check.models import (
 )
 from spdx3_validator.engine import ValidationEngine as SPDX3ValidationEngine
 from spdx_validator.engine import ValidationEngine
-
-
-@pytest.fixture(autouse=True)
-def reset_remote_failure_reuse():
-    """Keep CLI opt-in state from affecting library-engine tests."""
-    spdx3_engine._remote_failure_state.reuse_enabled = False
-    spdx3_engine._remote_failure_state.failure = None
-    yield
-    spdx3_engine._remote_failure_state.reuse_enabled = False
-    spdx3_engine._remote_failure_state.failure = None
 
 
 def test_engine_initialization():
