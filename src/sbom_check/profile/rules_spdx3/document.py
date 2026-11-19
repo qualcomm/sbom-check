@@ -5,23 +5,27 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from sbom_check.profile.rules_spdx3._common import (
     _AGENT_TYPES,
-    _LICENSE_LIST_VERSION_PATTERN,
     _SPDX_3_0_1,
-    _TIMESTAMP_PATTERN,
     _as_str_list,
     _is_absolute_iri,
+    _is_license_list_version,
     _is_nonempty_str,
+    _is_valid_timestamp,
+    _LicenseReference,
     _message,
+    _ReferenceProblem,
+    _resolve_license_reference,
 )
 from sbom_check.profile.spdx3_model import Spdx3Document
 
 if TYPE_CHECKING:
     from sbom_check.models import ValidationMessage
     from sbom_check.profile.registry import RuleContext
+    from sbom_check.profile.spdx3_model import Spdx3Element
 
 
 class DocumentNameRule:
@@ -73,12 +77,21 @@ class DocumentNameRule:
 
 
 class DocumentIdentifierRule:
-    """The document's ``spdxId`` must be present, non-empty, and an IRI."""
+    """The document's ``spdxId`` must be a valid IRI and graph ids unique.
+
+    Besides checking the ``SpdxDocument`` identifier itself, this rule
+    reports every id defined by more than one ``@graph`` entry, because
+    duplicates make every reference in the document ambiguous. Duplicates
+    that involve a package are left to
+    :class:`~sbom_check.profile.rules_spdx3.package.PackageIdentifierRule`
+    so that each is reported once.
+    """
 
     rule_id = "spdx3_completeness.document_identifier"
     description = (
         "SpdxDocument.spdxId must be present, non-empty, an absolute IRI, "
-        "and must not contain a '#' fragment."
+        "and must not contain a '#' fragment; every element id in the "
+        "document must be unique."
     )
     spdx_versions = _SPDX_3_0_1
 
@@ -91,13 +104,58 @@ class DocumentIdentifierRule:
         Returns:
             list[ValidationMessage]: A finding if ``spdxId`` is
             missing/empty, not an absolute IRI, or contains a ``#``
-            fragment; otherwise an empty list. Returns an empty list
-            (rather than duplicating) when there is no ``SpdxDocument``
-            element at all -- :class:`DocumentNameRule` reports that.
+            fragment; plus one finding per non-package id defined more
+            than once. The SpdxDocument checks are skipped (rather than
+            duplicated) when there is no ``SpdxDocument`` element at
+            all -- :class:`DocumentNameRule` reports that.
         """
         doc = Spdx3Document.from_dict(document)
-        if (spdx_doc := doc.spdx_document()) is None:
-            return []
+        messages = self._duplicate_id_messages(doc)
+        if (spdx_doc := doc.spdx_document()) is not None:
+            messages.extend(self._document_id_messages(spdx_doc))
+        return messages
+
+    def _duplicate_id_messages(self, doc: Spdx3Document) -> list[ValidationMessage]:
+        """Report ids defined by more than one non-package ``@graph`` entry.
+
+        Args:
+            doc: The document adapter.
+
+        Returns:
+            list[ValidationMessage]: One finding per duplicated id none
+            of whose definitions is a package.
+        """
+        messages: list[ValidationMessage] = []
+        for element_id, definitions in doc.duplicate_ids().items():
+            if any(element.is_type("software_Package") for element in definitions):
+                continue
+            indexes = ", ".join(f"@graph[{e.graph_index}]" for e in definitions)
+            messages.append(
+                _message(
+                    rule_id=self.rule_id,
+                    message=(
+                        f"Element id {element_id!r} is defined by "
+                        f"{len(definitions)} @graph entries ({indexes}), so "
+                        "references to it are ambiguous."
+                    ),
+                    field_path=f"@graph[{definitions[0].graph_index}]",
+                    remediation="Give every element in the document its own unique id.",
+                    section_reference="Identifiers",
+                    found_value=element_id,
+                )
+            )
+        return messages
+
+    def _document_id_messages(self, spdx_doc: Spdx3Element) -> list[ValidationMessage]:
+        """Check the SpdxDocument's own ``spdxId``.
+
+        Args:
+            spdx_doc: The SpdxDocument element.
+
+        Returns:
+            list[ValidationMessage]: At most one finding for a missing,
+            fragment-bearing, or non-IRI ``spdxId``.
+        """
         spdx_id = spdx_doc.get("spdxId")
         path = spdx_doc.element_path()
         if not _is_nonempty_str(spdx_id):
@@ -169,6 +227,23 @@ class CreationTimestampRule:
         if (spdx_doc := doc.spdx_document()) is None:
             return []
         if (creation_info := doc.creation_info_for(spdx_doc)) is None:
+            if doc.creation_info_is_wrong_type(spdx_doc):
+                return [
+                    _message(
+                        rule_id=self.rule_id,
+                        message=(
+                            f"SpdxDocument {spdx_doc.element_path()} "
+                            "creationInfo does not identify a CreationInfo "
+                            "element."
+                        ),
+                        field_path=spdx_doc.element_path(),
+                        remediation=(
+                            "Point creationInfo at an element of type CreationInfo."
+                        ),
+                        section_reference="Document metadata",
+                        found_value=spdx_doc.get("creationInfo"),
+                    )
+                ]
             return [
                 _message(
                     rule_id=self.rule_id,
@@ -195,13 +270,14 @@ class CreationTimestampRule:
                     section_reference="Document metadata",
                 )
             ]
-        if not _TIMESTAMP_PATTERN.match(created):
+        if not _is_valid_timestamp(created):
             return [
                 _message(
                     rule_id=self.rule_id,
                     message=(
                         f"CreationInfo {path} created value {created!r} is "
-                        "not a valid ISO-8601 UTC instant."
+                        "not a valid ISO-8601 UTC instant (UTC 'Z' format, "
+                        "real calendar date and time of day)."
                     ),
                     field_path=path,
                     remediation=(
@@ -338,17 +414,44 @@ class SpecVersionRule:
 
 
 class DataLicenseRule:
-    """The document's ``dataLicense`` must be present.
+    """The document's ``dataLicense`` must resolve to an AnyLicenseInfo element.
 
     SPDX 3.0.1 makes ``dataLicense`` optional (``sh:maxCount 1``, no
-    ``minCount``) and IRI-valued rather than the literal string
-    ``CC0-1.0`` used in 2.3. The Qualcomm profile requires it anyway;
-    any non-empty value is accepted and an IRI need not resolve.
+    ``minCount``) and IRI-valued, with range
+    ``SimpleLicensing/AnyLicenseInfo``, rather than the literal string
+    ``CC0-1.0`` used in 2.3. The Qualcomm profile requires it anyway, and
+    requires the reference to resolve: to an AnyLicenseInfo element in
+    the ``@graph``, an inline AnyLicenseInfo object, an SPDX License List
+    IRI (``https://spdx.org/licenses/<id>``), or one of the model's
+    ``NoneLicense``/``NoAssertionLicense`` individuals. Missing,
+    malformed (not a reference), dangling, and wrong-type values are
+    reported with distinct messages.
     """
 
     rule_id = "spdx3_completeness.data_license"
-    description = "SpdxDocument.dataLicense must be present and non-empty."
+    description = (
+        "SpdxDocument.dataLicense must be present and resolve to an "
+        "AnyLicenseInfo element."
+    )
     spdx_versions = _SPDX_3_0_1
+
+    _PROBLEMS: ClassVar[dict[_LicenseReference, _ReferenceProblem]] = {
+        _LicenseReference.MALFORMED: _ReferenceProblem(
+            "is not an IRI reference to a license element",
+            "Set dataLicense to the IRI of a license element in the document, "
+            "not a literal license name.",
+        ),
+        _LicenseReference.DANGLING: _ReferenceProblem(
+            "references a license element that is not present in the document",
+            "Add the referenced license element to the @graph, or correct the "
+            "dataLicense reference.",
+        ),
+        _LicenseReference.WRONG_TYPE: _ReferenceProblem(
+            "does not identify an AnyLicenseInfo element",
+            "Point dataLicense at a license element such as a "
+            "simplelicensing_LicenseExpression or expandedlicensing_ListedLicense.",
+        ),
+    }
 
     def evaluate(self, document: Any, _context: RuleContext) -> list[ValidationMessage]:
         """Evaluate data-license completeness.
@@ -358,21 +461,36 @@ class DataLicenseRule:
 
         Returns:
             list[ValidationMessage]: A finding if ``dataLicense`` is
-            missing/empty; otherwise an empty list.
+            missing/empty, malformed, dangling, or names a non-license
+            element; otherwise an empty list.
         """
         doc = Spdx3Document.from_dict(document)
         if (spdx_doc := doc.spdx_document()) is None:
             return []
-        if _is_nonempty_str(spdx_doc.get("dataLicense")):
-            return []
         path = spdx_doc.element_path()
+        value = spdx_doc.get("dataLicense")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return [
+                _message(
+                    rule_id=self.rule_id,
+                    message=f"SpdxDocument {path} is missing a dataLicense value.",
+                    field_path=path,
+                    remediation="Set dataLicense on the SpdxDocument to a license IRI.",
+                    section_reference="Document metadata",
+                )
+            ]
+        outcome = _resolve_license_reference(doc, value)
+        if outcome is _LicenseReference.RESOLVED:
+            return []
+        problem, remediation = self._PROBLEMS[outcome]
         return [
             _message(
                 rule_id=self.rule_id,
-                message=f"SpdxDocument {path} is missing a dataLicense value.",
+                message=f"SpdxDocument {path} dataLicense {value!r} {problem}.",
                 field_path=path,
-                remediation=("Set dataLicense on the SpdxDocument to a license IRI."),
+                remediation=remediation,
                 section_reference="Document metadata",
+                found_value=value,
             )
         ]
 
@@ -435,7 +553,7 @@ class LicenseListVersionRule:
                     )
                 )
                 continue
-            if not _LICENSE_LIST_VERSION_PATTERN.match(value):
+            if not _is_license_list_version(value):
                 messages.append(
                     _message(
                         rule_id=self.rule_id,

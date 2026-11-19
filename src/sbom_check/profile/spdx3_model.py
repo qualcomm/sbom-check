@@ -279,6 +279,9 @@ class Spdx3Document:
     _relationships_by_from: dict[str, tuple[Spdx3Relationship, ...]] = field(
         default_factory=dict, repr=False, compare=False
     )
+    _duplicates: dict[str, tuple[Spdx3Element, ...]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
 
     @classmethod
     def from_dict(cls, document: dict[str, Any]) -> Spdx3Document:
@@ -301,12 +304,25 @@ class Spdx3Document:
             if (built := _build_element(entry, index)) is not None:
                 elements.append(built)
 
-        # First definition wins, matching the previous first-match-scan
-        # behaviour for documents that repeat an id.
-        by_id: dict[str, Spdx3Element] = {}
+        # An id defined more than once is ambiguous: picking either
+        # definition would let a reference be satisfied by an element the
+        # producer may not have meant. Such ids are recorded as duplicates
+        # for the identifier rules to report and are left out of the index,
+        # so no reference can resolve through them.
+        by_id_all: dict[str, list[Spdx3Element]] = {}
         for element in elements:
             if element.element_id is not None:
-                by_id.setdefault(element.element_id, element)
+                by_id_all.setdefault(element.element_id, []).append(element)
+        by_id = {
+            element_id: defs[0]
+            for element_id, defs in by_id_all.items()
+            if len(defs) == 1
+        }
+        duplicates = {
+            element_id: tuple(defs)
+            for element_id, defs in by_id_all.items()
+            if len(defs) > 1
+        }
 
         relationships = tuple(
             Spdx3Relationship(
@@ -337,7 +353,21 @@ class Spdx3Document:
             _relationships_by_from={
                 key: tuple(value) for key, value in by_from.items()
             },
+            _duplicates=duplicates,
         )
+
+    def duplicate_ids(self) -> dict[str, tuple[Spdx3Element, ...]]:
+        """List ids defined by more than one ``@graph`` entry.
+
+        Args:
+            None.
+
+        Returns:
+            dict[str, tuple[Spdx3Element, ...]]: Each duplicated id mapped
+            to every element defining it, in document order. Duplicated
+            ids never resolve through :meth:`element_by_id`.
+        """
+        return dict(self._duplicates)
 
     def elements_of_type(self, *types: str) -> list[Spdx3Element]:
         """List all elements matching any of the given normalized types.
@@ -358,7 +388,8 @@ class Spdx3Document:
 
         Returns:
             Spdx3Element | None: The matching element, or None if not
-            found or ``element_id`` is None.
+            found, if ``element_id`` is None, or if the id is defined
+            more than once (see :meth:`duplicate_ids`).
         """
         if not element_id:
             return None
@@ -410,14 +441,39 @@ class Spdx3Document:
             Spdx3Element | None: The referenced ``CreationInfo``
             element. If the raw value is a nested dict rather than a
             reference, it is wrapped and returned directly. None when
-            absent or the reference is dangling.
+            absent, when the reference is dangling, or when the value
+            does not have type ``CreationInfo``: another element that
+            happens to carry ``created`` or ``specVersion`` fields must
+            not stand in for creation metadata.
         """
         value = element.get("creationInfo")
+        resolved: Spdx3Element | None = None
         if isinstance(value, dict):
-            return _build_element(value, element.graph_index)
-        if isinstance(value, str):
-            return self.element_by_id(value)
-        return None
+            resolved = _build_element(value, element.graph_index)
+        elif isinstance(value, str):
+            resolved = self.element_by_id(value)
+        if resolved is None or not resolved.is_type("CreationInfo"):
+            return None
+        return resolved
+
+    def creation_info_is_wrong_type(self, element: Spdx3Element) -> bool:
+        """Check whether ``creationInfo`` names an element that is not CreationInfo.
+
+        Args:
+            element: The element whose ``creationInfo`` should be checked.
+
+        Returns:
+            bool: True if ``creationInfo`` is an inline dict, or a
+            reference resolving to a present element, whose type is not
+            ``CreationInfo``. False when absent, dangling, or correct.
+        """
+        value = element.get("creationInfo")
+        target: Spdx3Element | None = None
+        if isinstance(value, dict):
+            target = _build_element(value, element.graph_index)
+        elif isinstance(value, str):
+            target = self.element_by_id(value)
+        return target is not None and not target.is_type("CreationInfo")
 
     def agents(self) -> list[Spdx3Element]:
         """List all agent-like elements.

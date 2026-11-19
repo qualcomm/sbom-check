@@ -402,3 +402,61 @@ def test_agents_includes_organization_person_and_tool() -> None:
 
     agent_ids = {agent.element_id for agent in doc.agents()}
     assert agent_ids == {"a1", "a2", "a3", "a4"}
+
+
+def test_duplicate_ids_are_reported_and_do_not_resolve() -> None:
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {"type": "software_Package", "spdxId": "urn:x:dup", "name": "a"},
+                {"type": "software_Package", "spdxId": "urn:x:dup", "name": "b"},
+                {"type": "software_Package", "spdxId": "urn:x:one", "name": "c"},
+            ]
+        }
+    )
+
+    duplicates = doc.duplicate_ids()
+    assert set(duplicates) == {"urn:x:dup"}
+    assert [e.get("name") for e in duplicates["urn:x:dup"]] == ["a", "b"]
+    assert doc.element_by_id("urn:x:dup") is None
+    assert doc.element_by_id("urn:x:one") is not None
+
+
+def test_creation_info_for_rejects_non_creation_info_reference() -> None:
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {
+                    "type": "SpdxDocument",
+                    "spdxId": "urn:x:doc",
+                    "creationInfo": "urn:x:pkg",
+                },
+                {
+                    "type": "software_Package",
+                    "spdxId": "urn:x:pkg",
+                    "created": "2026-01-15T00:00:00Z",
+                    "specVersion": "3.0.1",
+                },
+            ]
+        }
+    )
+    spdx_doc = doc.spdx_document()
+    assert spdx_doc is not None
+
+    assert doc.creation_info_for(spdx_doc) is None
+    assert doc.creation_info_is_wrong_type(spdx_doc) is True
+
+
+def test_creation_info_is_wrong_type_false_when_dangling_or_absent() -> None:
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {"type": "software_Package", "spdxId": "a", "creationInfo": "_:x"},
+                {"type": "software_Package", "spdxId": "b"},
+            ]
+        }
+    )
+    first, second = doc.elements
+
+    assert doc.creation_info_is_wrong_type(first) is False
+    assert doc.creation_info_is_wrong_type(second) is False

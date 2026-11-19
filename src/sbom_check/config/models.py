@@ -439,22 +439,22 @@ def _default_spdx3_completeness_checks() -> dict[str, CompletenessCheckRule]:
         "spdx3_completeness.package_cpe": _rule(
             severity=warning,
             description=(
-                "Where a package has an official CPE identifier, the SBOM "
-                "should include it."
+                "Any CPE identifier the SBOM declares for a package should "
+                "carry a non-empty value. Packages without a CPE entry are "
+                "not affected."
             ),
             remediation=(
-                "Include the official CPE identifier for a package whenever "
-                "one has been assigned to it."
+                "Give every declared CPE identifier a value, or remove the empty entry."
             ),
         ),
         "spdx3_completeness.no_isolated_elements": _rule(
             severity=warning,
             description=(
-                "Every package and file in the SBOM should be linked back "
-                "to the document so nothing is orphaned."
+                "Every package, file and snippet in the SBOM should be "
+                "linked back to the document so nothing is orphaned."
             ),
             remediation=(
-                "Make sure every package and file you include is connected "
+                "Make sure every package, file and snippet you include is connected "
                 "to the document, not left disconnected from the rest of the "
                 "SBOM."
             ),

@@ -35,10 +35,18 @@ class PackageNameRule(_PackageScalarFieldRule):
 
 
 class PackageIdentifierRule:
-    """``software_Package.spdxId`` must be present, non-empty, and an IRI."""
+    """``software_Package.spdxId`` must be present, an IRI, and unique.
+
+    A package whose ``spdxId`` is also defined by any other ``@graph``
+    entry is a finding: graph references to that id are ambiguous, so
+    the adapter resolves none of them.
+    """
 
     rule_id = "spdx3_completeness.package_identifier"
-    description = "software_Package.spdxId must be present, non-empty, and an IRI."
+    description = (
+        "software_Package.spdxId must be present, non-empty, an absolute "
+        "IRI, and unique within the document."
+    )
     spdx_versions = _SPDX_3_0_1
 
     def evaluate(self, document: Any, _context: RuleContext) -> list[ValidationMessage]:
@@ -49,9 +57,11 @@ class PackageIdentifierRule:
 
         Returns:
             list[ValidationMessage]: One finding per package whose
-            ``spdxId`` is missing, empty, or not an absolute IRI.
+            ``spdxId`` is missing, empty, not an absolute IRI, or
+            defined by more than one ``@graph`` entry.
         """
         doc = Spdx3Document.from_dict(document)
+        duplicates = doc.duplicate_ids()
         messages: list[ValidationMessage] = []
         for pkg in doc.packages():
             path = pkg.element_path()
@@ -77,6 +87,24 @@ class PackageIdentifierRule:
                         remediation=(
                             "Use an absolute IRI (with a scheme or 'urn:' "
                             "prefix) as the package spdxId."
+                        ),
+                        section_reference="Identifiers",
+                        found_value=spdx_id,
+                    )
+                )
+            elif spdx_id in duplicates:
+                messages.append(
+                    _message(
+                        rule_id=self.rule_id,
+                        message=(
+                            f"Package @graph[{pkg.graph_index}] spdxId "
+                            f"{spdx_id!r} is defined by "
+                            f"{len(duplicates[spdx_id])} @graph entries, so "
+                            "references to it are ambiguous."
+                        ),
+                        field_path=f"@graph[{pkg.graph_index}]",
+                        remediation=(
+                            "Give every element in the document its own unique spdxId."
                         ),
                         section_reference="Identifiers",
                         found_value=spdx_id,
@@ -224,13 +252,16 @@ class LicenseDeclaredRule(_PackageLicenseRelationshipRule):
 
 
 class PackageCpeRule:
-    """A CPE is required only when the package already declares one.
+    """Validates declared CPE entries; does not require a CPE to be present.
 
-    CONDITIONAL: a package with no CPE external-identifier entry at all
-    passes -- CPE remains conditional on an official CPE existing, as in
-    the 2.3 profile. A package that *does* declare a ``cpe23``/``cpe22``
-    external identifier but leaves its ``identifier`` empty or missing
-    is a finding.
+    This rule's scope is narrower than the 2.3 conditional requirement
+    ("required when an official CPE exists"). Whether an official CPE
+    exists for a package cannot be decided from the SBOM alone, and the
+    applicability condition is still an open question for the profile
+    owners (matrix Open Question 3), so the rule does not attempt it. A
+    package with no CPE external-identifier entry passes. A package that
+    declares a ``cpe23``/``cpe22`` external identifier but leaves its
+    ``identifier`` empty or missing is a finding.
     """
 
     rule_id = "spdx3_completeness.package_cpe"
