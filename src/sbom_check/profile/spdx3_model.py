@@ -17,6 +17,16 @@ from typing import Any
 
 _SPDX_IRI_PREFIX = "https://spdx.org/rdf/3.0.1/terms/"
 _SPDX_PREFIX = "spdx:"
+# Prefix definitions of the SPDX 3.0.1 JSON-LD context, pinned from
+# https://spdx.org/rdf/3.0.1/spdx-context.jsonld (SPDX 3.0.1). That context
+# defines exactly one prefix; its other entries are terms naming SPDX
+# classes, properties and vocabulary members, not element ids. Remote
+# contexts are never fetched.
+_SPDX_CONTEXT_PREFIXES: dict[str, str] = {"spdx": _SPDX_IRI_PREFIX}
+# JSON-LD 1.1 section 4.2.2: a simple term definition is usable as a
+# prefix when its IRI ends in one of these gen-delim characters.
+_PREFIX_IRI_ENDINGS = (":", "/", "?", "#", "[", "]", "@")
+_BLANK_NODE_PREFIX = "_"
 
 _AGENT_TYPES = ("Agent", "Organization", "Person", "Tool")
 _MIN_NAMESPACED_PARTS = 2
@@ -55,18 +65,20 @@ def _normalize_type(raw_type: str) -> str:
     return name
 
 
-def _normalize_relationship_type(raw_value: Any) -> str | None:
-    """Normalize a ``relationshipType`` value to its short enumeration name.
+def _normalize_vocab_value(raw_value: Any) -> str | None:
+    """Normalize an SPDX vocabulary value to its short enumeration name.
 
-    ``relationshipType`` is IRI-valued in the SPDX 3.0.1 model, so a
-    conforming document may spell ``describes`` as the short JSON-LD term,
-    as a ``spdx:``-prefixed name, or as the fully expanded
+    Vocabulary-valued properties such as ``relationshipType`` and
+    ``externalIdentifierType`` are IRI-valued in the SPDX 3.0.1 model, so
+    a conforming document may spell ``describes`` as the short JSON-LD
+    term, as a ``spdx:``-prefixed name, or as the fully expanded
     ``.../Core/RelationshipType/describes`` IRI. Rules compare against the
-    short name, so every spelling is reduced to it here.
+    short name, so every spelling is reduced to it here. Callers expand
+    document-defined prefixes before calling this.
 
     Args:
-        raw_value: The raw ``relationshipType`` value, expected to be a
-            string; any other type yields None.
+        raw_value: The raw vocabulary value, expected to be a string; any
+            other type yields None.
 
     Returns:
         str | None: The short enumeration name (e.g. ``describes``), or
@@ -85,6 +97,99 @@ def _normalize_relationship_type(raw_value: Any) -> str | None:
     if not (parts := [part for part in value.split("/") if part]):
         return raw_value
     return parts[-1]
+
+
+def _is_prefix_iri(value: Any) -> bool:
+    """Check whether a term definition's IRI makes the term usable as a prefix.
+
+    Args:
+        value: The IRI a simple term definition maps to.
+
+    Returns:
+        bool: True if ``value`` is a string ending in a gen-delim character.
+    """
+    return isinstance(value, str) and value.endswith(_PREFIX_IRI_ENDINGS)
+
+
+def _expand_iri(value: str, prefixes: dict[str, str]) -> str:
+    """Expand a compact IRI (``prefix:suffix``) against known prefixes.
+
+    Args:
+        value: The IRI as written in the document.
+        prefixes: Prefix name to IRI mapping.
+
+    Returns:
+        str: The expanded IRI. Values that are not compact IRIs with a
+        known prefix -- absolute IRIs (``https://...``), blank-node ids
+        (``_:b0``), ``urn:`` values and plain strings -- are returned
+        unchanged.
+    """
+    prefix, separator, suffix = value.partition(":")
+    if not separator or prefix == _BLANK_NODE_PREFIX or suffix.startswith("//"):
+        return value
+    if (iri := prefixes.get(prefix)) is None:
+        return value
+    return iri + suffix
+
+
+def _expand_vocab(raw_value: Any, prefixes: dict[str, str]) -> Any:
+    """Expand a compact-IRI vocabulary value, passing non-strings through.
+
+    Args:
+        raw_value: The raw vocabulary value.
+        prefixes: Prefix name to IRI mapping.
+
+    Returns:
+        Any: The expanded string, or ``raw_value`` unchanged if it is not
+        a string.
+    """
+    if not isinstance(raw_value, str):
+        return raw_value
+    return _expand_iri(raw_value, prefixes)
+
+
+def _context_prefixes(raw_context: Any) -> dict[str, str]:
+    """Build the prefix map for a document from its ``@context``.
+
+    Starts from the pinned SPDX 3.0.1 context prefixes and layers on the
+    prefixes the document defines inline, in order, as JSON-LD does.
+    Context references by URL are not fetched: the SPDX 3.0.1 context is
+    already covered by the pinned map, and any other remote context is
+    ignored.
+
+    Args:
+        raw_context: The raw ``@context`` value: a URL string, an inline
+            context dict, a list of those, or absent.
+
+    Returns:
+        dict[str, str]: Prefix name to IRI mapping.
+    """
+    prefixes = dict(_SPDX_CONTEXT_PREFIXES)
+    contexts = raw_context if isinstance(raw_context, list) else [raw_context]
+    for context in contexts:
+        if not isinstance(context, dict):
+            continue
+        for term, definition in context.items():
+            if (
+                not isinstance(term, str)
+                or term.startswith("@")
+                or ":" in term
+                or "/" in term
+            ):
+                continue
+            if definition is None:
+                prefixes.pop(term, None)
+                continue
+            iri: Any = definition
+            if isinstance(definition, dict):
+                if definition.get("@prefix") is not True:
+                    continue
+                iri = definition.get("@id")
+            elif not _is_prefix_iri(definition):
+                continue
+            if isinstance(iri, str):
+                prefixes[term] = _expand_iri(iri, prefixes)
+    return prefixes
 
 
 def _coerce_type_list(raw_value: Any) -> list[str]:
@@ -201,29 +306,32 @@ class _AgentResolution:
     reference_is_dangling: bool
 
 
-def _element_id_of(raw: Any) -> str | None:
-    """Extract the id (``spdxId`` or ``@id``) from a raw element dict.
+def _element_id_of(raw: Any, prefixes: dict[str, str]) -> str | None:
+    """Extract the expanded id (``spdxId`` or ``@id``) from a raw element dict.
 
     Args:
         raw: The candidate raw element, expected to be a dict.
+        prefixes: Prefix map used to expand a compact IRI id.
 
     Returns:
-        str | None: The element id if present and a string, else None.
+        str | None: The expanded element id if present and a string,
+        else None.
     """
     if not isinstance(raw, dict):
         return None
     for key in ("spdxId", "@id"):
         value = raw.get(key)
         if isinstance(value, str):
-            return value
+            return _expand_iri(value, prefixes)
     return None
 
 
-def _element_types_of(raw: Any) -> tuple[str, ...]:
+def _element_types_of(raw: Any, prefixes: dict[str, str]) -> tuple[str, ...]:
     """Extract and normalize all types from a raw element dict.
 
     Args:
         raw: The candidate raw element, expected to be a dict.
+        prefixes: Prefix map used to expand compact IRI types.
 
     Returns:
         tuple[str, ...]: Normalized type names, in document order.
@@ -233,15 +341,18 @@ def _element_types_of(raw: Any) -> tuple[str, ...]:
     raw_types = _coerce_type_list(raw.get("type")) or _coerce_type_list(
         raw.get("@type")
     )
-    return tuple(_normalize_type(t) for t in raw_types)
+    return tuple(_normalize_type(_expand_iri(t, prefixes)) for t in raw_types)
 
 
-def _build_element(raw: Any, graph_index: int) -> Spdx3Element | None:
+def _build_element(
+    raw: Any, graph_index: int, prefixes: dict[str, str]
+) -> Spdx3Element | None:
     """Build a :class:`Spdx3Element` from a raw ``@graph`` entry.
 
     Args:
         raw: The candidate raw entry from ``@graph``.
         graph_index: The entry's position in ``@graph``.
+        prefixes: Prefix map used to expand the id and types.
 
     Returns:
         Spdx3Element | None: The built element, or None if ``raw`` is
@@ -249,14 +360,43 @@ def _build_element(raw: Any, graph_index: int) -> Spdx3Element | None:
     """
     if not isinstance(raw, dict):
         return None
-    types = _element_types_of(raw)
+    types = _element_types_of(raw, prefixes)
     element_type = types[0] if types else None
     return Spdx3Element(
-        element_id=_element_id_of(raw),
+        element_id=_element_id_of(raw, prefixes),
         element_type=element_type,
         element_types=types,
         raw=raw,
         graph_index=graph_index,
+    )
+
+
+def _build_relationship(
+    element: Spdx3Element, prefixes: dict[str, str]
+) -> Spdx3Relationship:
+    """Build a typed relationship view with expanded endpoints.
+
+    Args:
+        element: A ``Relationship`` element.
+        prefixes: Prefix map used to expand ``from``, ``to`` and
+            ``relationshipType``.
+
+    Returns:
+        Spdx3Relationship: The relationship, with ``from``/``to`` expanded
+        to full IRIs and ``relationshipType`` reduced to its short name.
+    """
+    from_value = element.get("from")
+    return Spdx3Relationship(
+        from_id=(
+            _expand_iri(from_value, prefixes) if isinstance(from_value, str) else None
+        ),
+        relationship_type=_normalize_vocab_value(
+            _expand_vocab(element.get("relationshipType"), prefixes)
+        ),
+        to_ids=tuple(
+            _expand_iri(to_id, prefixes) for to_id in _as_id_list(element.get("to"))
+        ),
+        element=element,
     )
 
 
@@ -267,6 +407,10 @@ class Spdx3Document:
     Lookups by id and by relationship source are served from indexes
     built once per document. Rules are run per element, so linear scans
     here would make a whole validation run quadratic in graph size.
+
+    Element ids and IRI references are expanded against the document's
+    prefixes (see :meth:`canonical_id`) before they are indexed, looked
+    up or compared, so ``spdx:Foo`` and its expanded IRI are the same id.
     """
 
     elements: tuple[Spdx3Element, ...] = field(default_factory=tuple)
@@ -281,6 +425,11 @@ class Spdx3Document:
     )
     _duplicates: dict[str, tuple[Spdx3Element, ...]] = field(
         default_factory=dict, repr=False, compare=False
+    )
+    _prefixes: dict[str, str] = field(
+        default_factory=lambda: dict(_SPDX_CONTEXT_PREFIXES),
+        repr=False,
+        compare=False,
     )
 
     @classmethod
@@ -298,10 +447,11 @@ class Spdx3Document:
         graph = document.get("@graph") if isinstance(document, dict) else None
         if not isinstance(graph, list):
             return cls(elements=())
+        prefixes = _context_prefixes(document.get("@context"))
 
         elements: list[Spdx3Element] = []
         for index, entry in enumerate(graph):
-            if (built := _build_element(entry, index)) is not None:
+            if (built := _build_element(entry, index, prefixes)) is not None:
                 elements.append(built)
 
         # An id defined more than once is ambiguous: picking either
@@ -325,18 +475,7 @@ class Spdx3Document:
         }
 
         relationships = tuple(
-            Spdx3Relationship(
-                from_id=(
-                    from_value
-                    if isinstance(from_value := element.get("from"), str)
-                    else None
-                ),
-                relationship_type=_normalize_relationship_type(
-                    element.get("relationshipType")
-                ),
-                to_ids=tuple(_as_id_list(element.get("to"))),
-                element=element,
-            )
+            _build_relationship(element, prefixes)
             for element in elements
             if element.is_type("Relationship")
         )
@@ -354,7 +493,39 @@ class Spdx3Document:
                 key: tuple(value) for key, value in by_from.items()
             },
             _duplicates=duplicates,
+            _prefixes=prefixes,
         )
+
+    def canonical_id(self, value: str) -> str:
+        """Expand an id or IRI reference to the form used for lookups.
+
+        Compact IRIs are expanded against the pinned SPDX 3.0.1 context
+        prefixes and any prefixes the document's own inline ``@context``
+        defines. Relative IRIs are not resolved against ``@base``.
+
+        Args:
+            value: An id or IRI reference as written in the document.
+
+        Returns:
+            str: The expanded IRI, or ``value`` unchanged if it is not a
+            compact IRI with a known prefix.
+        """
+        return _expand_iri(value, self._prefixes)
+
+    def types_of(self, raw: dict[str, Any]) -> tuple[str, ...]:
+        """Normalize the types of an inline (non-``@graph``) node.
+
+        Uses the same normalization as ``@graph`` elements, so an inline
+        node typed with a full IRI or a ``spdx:``-prefixed name matches
+        the short type names rules test for.
+
+        Args:
+            raw: The raw inline node.
+
+        Returns:
+            tuple[str, ...]: Normalized type names, in document order.
+        """
+        return _element_types_of(raw, self._prefixes)
 
     def duplicate_ids(self) -> dict[str, tuple[Spdx3Element, ...]]:
         """List ids defined by more than one ``@graph`` entry.
@@ -393,7 +564,7 @@ class Spdx3Document:
         """
         if not element_id:
             return None
-        return self._by_id.get(element_id)
+        return self._by_id.get(self.canonical_id(element_id))
 
     def packages(self) -> list[Spdx3Element]:
         """List all ``software_Package`` elements.
@@ -449,7 +620,7 @@ class Spdx3Document:
         value = element.get("creationInfo")
         resolved: Spdx3Element | None = None
         if isinstance(value, dict):
-            resolved = _build_element(value, element.graph_index)
+            resolved = _build_element(value, element.graph_index, self._prefixes)
         elif isinstance(value, str):
             resolved = self.element_by_id(value)
         if resolved is None or not resolved.is_type("CreationInfo"):
@@ -470,7 +641,7 @@ class Spdx3Document:
         value = element.get("creationInfo")
         target: Spdx3Element | None = None
         if isinstance(value, dict):
-            target = _build_element(value, element.graph_index)
+            target = _build_element(value, element.graph_index, self._prefixes)
         elif isinstance(value, str):
             target = self.element_by_id(value)
         return target is not None and not target.is_type("CreationInfo")
@@ -515,7 +686,7 @@ class Spdx3Document:
         """
         if not from_id:
             return []
-        matches = list(self._relationships_by_from.get(from_id, ()))
+        matches = list(self._relationships_by_from.get(self.canonical_id(from_id), ()))
         if relationship_type is not None:
             matches = [
                 rel for rel in matches if rel.relationship_type == relationship_type
@@ -565,23 +736,23 @@ class Spdx3Document:
                 result.append(self._external_identifier_from_dict(resolved.raw))
         return result
 
-    @staticmethod
-    def _external_identifier_from_dict(raw: dict[str, Any]) -> Spdx3ExternalIdentifier:
+    def _external_identifier_from_dict(
+        self, raw: dict[str, Any]
+    ) -> Spdx3ExternalIdentifier:
         """Build an external identifier view from an inline dict.
 
         Args:
             raw: The raw ``ExternalIdentifier`` dict.
 
         Returns:
-            Spdx3ExternalIdentifier: The typed view of ``raw``.
+            Spdx3ExternalIdentifier: The typed view of ``raw``, with
+            ``externalIdentifierType`` reduced to its short enumeration
+            name (``cpe23``) whichever IRI spelling the document used.
         """
-        identifier_type_value = raw.get("externalIdentifierType")
         identifier_value = raw.get("identifier")
         return Spdx3ExternalIdentifier(
-            identifier_type=(
-                identifier_type_value
-                if isinstance(identifier_type_value, str)
-                else None
+            identifier_type=_normalize_vocab_value(
+                _expand_vocab(raw.get("externalIdentifierType"), self._prefixes)
             ),
             identifier=(
                 identifier_value if isinstance(identifier_value, str) else None
@@ -604,7 +775,7 @@ class Spdx3Document:
         """
         value = element.get(prop)
         if isinstance(value, dict):
-            built = _build_element(value, element.graph_index)
+            built = _build_element(value, element.graph_index, self._prefixes)
             return _AgentResolution(agent=built, reference_is_dangling=False)
         if isinstance(value, str):
             if (resolved := self.element_by_id(value)) is None:

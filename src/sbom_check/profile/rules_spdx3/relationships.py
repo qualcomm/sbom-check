@@ -50,7 +50,10 @@ class DocumentDescribesRule:
         if (spdx_doc := doc.spdx_document()) is None:
             return []
         targets = [
-            *_as_str_list(spdx_doc.get("rootElement")),
+            *(
+                doc.canonical_id(root)
+                for root in _as_str_list(spdx_doc.get("rootElement"))
+            ),
             *(
                 to_id
                 for rel in doc.relationships_from(spdx_doc.element_id, "describes")
@@ -140,7 +143,9 @@ class NoIsolatedElementsRule:
         if (spdx_doc := doc.spdx_document()) is None:
             return []
 
-        reachable: set[str] = set(_as_str_list(spdx_doc.get("rootElement")))
+        reachable: set[str] = {
+            doc.canonical_id(root) for root in _as_str_list(spdx_doc.get("rootElement"))
+        }
         queue: list[str] = list(reachable)
         for rel in doc.relationships_from(spdx_doc.element_id):
             for to_id in rel.to_ids:

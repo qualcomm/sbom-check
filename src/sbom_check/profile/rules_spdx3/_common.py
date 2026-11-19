@@ -346,15 +346,18 @@ def _resolve_license_reference(doc: Spdx3Document, value: Any) -> _LicenseRefere
         when it names an element that is not AnyLicenseInfo.
     """
     if isinstance(value, dict):
+        types = doc.types_of(value)
         return (
             _LicenseReference.RESOLVED
-            if any(_entry_has_type(value, name) for name in _ANY_LICENSE_INFO_TYPES)
+            if any(name in types for name in _ANY_LICENSE_INFO_TYPES)
             else _LicenseReference.WRONG_TYPE
         )
-    if not isinstance(value, str) or not _is_reference_shape(value):
+    if not isinstance(value, str) or not _is_reference_shape(
+        iri := doc.canonical_id(value)
+    ):
         return _LicenseReference.MALFORMED
-    if (element := doc.element_by_id(value)) is None:
-        if value in _LICENSE_INDIVIDUALS or _LICENSE_LIST_IRI_PATTERN.fullmatch(value):
+    if (element := doc.element_by_id(iri)) is None:
+        if iri in _LICENSE_INDIVIDUALS or _LICENSE_LIST_IRI_PATTERN.fullmatch(iri):
             return _LicenseReference.RESOLVED
         return _LicenseReference.DANGLING
     if element.is_type(*_ANY_LICENSE_INFO_TYPES):
@@ -380,28 +383,6 @@ def _as_str_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str)]
     return []
-
-
-def _entry_has_type(raw: dict[str, Any], type_name: str) -> bool:
-    """Check whether a raw element dict's ``type``/``@type`` matches a name.
-
-    Args:
-        raw: The raw element dict (inline or resolved-by-reference).
-        type_name: The short type name to match, e.g.
-            ``"PackageVerificationCode"``.
-
-    Returns:
-        bool: True if any of the raw type values equals ``type_name`` or
-        ends with it after a namespace separator (``/`` or ``:``),
-        covering short-form, full-IRI, and ``spdx:``-prefixed spellings.
-    """
-    candidates = _as_str_list(raw.get("type")) or _as_str_list(raw.get("@type"))
-    return any(
-        candidate == type_name
-        or candidate.endswith(f"/{type_name}")
-        or candidate.endswith(f":{type_name}")
-        for candidate in candidates
-    )
 
 
 def _message(

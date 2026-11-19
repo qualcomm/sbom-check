@@ -1241,3 +1241,186 @@ class TestLicenseListVersionFullMatch:
         ] = value
 
         assert LicenseListVersionRule().evaluate(doc, _context()) == []
+
+
+class TestInlineLicenseTypeSpellings:
+    """Inline license nodes are typed with the same normalization as @graph."""
+
+    @pytest.mark.parametrize(
+        "license_type",
+        [
+            "expandedlicensing_ListedLicense",
+            "https://spdx.org/rdf/3.0.1/terms/ExpandedLicensing/ListedLicense",
+            "spdx:ExpandedLicensing/ListedLicense",
+            "https://spdx.org/rdf/3.0.1/terms/SimpleLicensing/LicenseExpression",
+            "spdx:SimpleLicensing/LicenseExpression",
+        ],
+    )
+    @pytest.mark.parametrize("type_key", ["type", "@type"])
+    def test_inline_data_license_type_spellings_resolve(
+        self, license_type: str, type_key: str
+    ) -> None:
+        """Full-IRI and spdx:-prefixed inline license types are accepted."""
+        doc = _copy(COMPLETE_DOC)
+        _element(doc, "SpdxDocument")["dataLicense"] = {type_key: license_type}
+
+        assert DataLicenseRule().evaluate(doc, _context()) == []
+
+    @pytest.mark.parametrize(
+        "other_type",
+        [
+            "https://spdx.org/rdf/3.0.1/terms/Software/Package",
+            "spdx:Core/Organization",
+            # A suffix match alone must not pass: this is not an SPDX type.
+            "https://example.test/ExpandedLicensing/ListedLicense",
+        ],
+    )
+    def test_inline_non_license_type_is_wrong_type(self, other_type: str) -> None:
+        """An inline node of another type is still reported as wrong type."""
+        doc = _copy(COMPLETE_DOC)
+        _element(doc, "SpdxDocument")["dataLicense"] = {"type": other_type}
+
+        messages = DataLicenseRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert "does not identify an AnyLicenseInfo" in messages[0].message
+
+
+SPDX_TERMS = "https://spdx.org/rdf/3.0.1/terms/"
+
+
+class TestCompactAndExpandedIris:
+    """Compact and expanded spellings of an IRI are the same id."""
+
+    def _supplier_doc(self, agent_id: str, supplied_by: str) -> dict[str, Any]:
+        doc = _copy(COMPLETE_DOC)
+        _element(doc, "Organization")["spdxId"] = agent_id
+        _element(doc, "CreationInfo")["createdBy"] = [agent_id]
+        _element(doc, "software_Package")["suppliedBy"] = supplied_by
+        return doc
+
+    @pytest.mark.parametrize(
+        ("agent_id", "supplied_by"),
+        [
+            ("spdx:CustomAgent", f"{SPDX_TERMS}CustomAgent"),
+            (f"{SPDX_TERMS}CustomAgent", "spdx:CustomAgent"),
+        ],
+        ids=["compact-defined", "expanded-defined"],
+    )
+    def test_mixed_spellings_resolve(self, agent_id: str, supplied_by: str) -> None:
+        """A reference in one spelling resolves an id defined in the other."""
+        doc = self._supplier_doc(agent_id, supplied_by)
+
+        assert PackageSupplierRule().evaluate(doc, _context()) == []
+        assert CreatorsRule().evaluate(doc, _context()) == []
+
+    def test_document_defined_prefix_is_expanded(self) -> None:
+        """Prefixes from the document's inline @context are honoured."""
+        doc = self._supplier_doc("acme:agent", "https://acme.example/ids/agent")
+        doc["@context"] = [
+            "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            {"acme": "https://acme.example/ids/"},
+        ]
+
+        assert PackageSupplierRule().evaluate(doc, _context()) == []
+
+    def test_unknown_prefix_is_not_expanded(self) -> None:
+        """A prefix the document never defines is left as written."""
+        doc = self._supplier_doc("acme:agent", "https://acme.example/ids/agent")
+
+        messages = PackageSupplierRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert "not present in the document" in messages[0].message
+
+    def test_relationship_endpoints_and_root_element_resolve(self) -> None:
+        """from, to and rootElement match ids written in the other spelling."""
+        doc = _copy(COMPLETE_DOC)
+        pkg = _element(doc, "software_Package")
+        pkg["spdxId"] = "spdx:pkg-libwidget"
+        expanded = f"{SPDX_TERMS}pkg-libwidget"
+        _element(doc, "SpdxDocument")["rootElement"] = [expanded]
+        for element in doc["@graph"]:
+            if element.get("relationshipType") == "describes":
+                element["to"] = [expanded]
+            elif element.get("relationshipType") in (
+                "hasConcludedLicense",
+                "hasDeclaredLicense",
+            ):
+                element["from"] = expanded
+
+        for rule in (
+            DocumentDescribesRule(),
+            NoIsolatedElementsRule(),
+            LicenseConcludedRule(),
+            LicenseDeclaredRule(),
+        ):
+            assert rule.evaluate(doc, _context()) == [], rule.rule_id
+
+    def test_two_spellings_of_one_id_are_duplicates(self) -> None:
+        """Compact and expanded spellings of one id count as a duplicate."""
+        doc = _copy(COMPLETE_DOC)
+        license_element = _element(doc, "simplelicensing_LicenseExpression")
+        license_element["spdxId"] = "spdx:license-apache"
+        twin = _copy(license_element)
+        twin["spdxId"] = f"{SPDX_TERMS}license-apache"
+        doc["@graph"].append(twin)
+
+        messages = DocumentIdentifierRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert messages[0].found_value == f"{SPDX_TERMS}license-apache"
+
+    def test_two_spellings_of_one_package_id_are_duplicates(self) -> None:
+        """Package duplicates are detected across spellings too."""
+        doc = _copy(COMPLETE_DOC)
+        pkg = _element(doc, "software_Package")
+        pkg["spdxId"] = "spdx:pkg-libwidget"
+        twin = _copy(pkg)
+        twin["spdxId"] = f"{SPDX_TERMS}pkg-libwidget"
+        doc["@graph"].append(twin)
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+        assert len(messages) == 2
+        assert all("ambiguous" in m.message for m in messages)
+
+    def test_compact_license_list_iri_resolves(self) -> None:
+        """A document-defined prefix for the license list is expanded."""
+        doc = _copy(COMPLETE_DOC)
+        doc["@context"] = [
+            "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+            {"spdxl": "https://spdx.org/licenses/"},
+        ]
+        _element(doc, "SpdxDocument")["dataLicense"] = "spdxl:CC0-1.0"
+
+        assert DataLicenseRule().evaluate(doc, _context()) == []
+
+
+class TestCpeTypeSpellings:
+    """externalIdentifierType is vocabulary-valued; every spelling counts."""
+
+    @pytest.mark.parametrize(
+        "identifier_type",
+        [
+            "cpe23",
+            "spdx:Core/ExternalIdentifierType/cpe23",
+            f"{SPDX_TERMS}Core/ExternalIdentifierType/cpe23",
+            "cpe22",
+            "spdx:Core/ExternalIdentifierType/cpe22",
+            f"{SPDX_TERMS}Core/ExternalIdentifierType/cpe22",
+        ],
+    )
+    @pytest.mark.parametrize("identifier", [None, ""], ids=["absent", "empty"])
+    def test_empty_cpe_fires_for_every_spelling(
+        self, identifier_type: str, identifier: str | None
+    ) -> None:
+        """An empty CPE is reported whichever IRI spelling names its type."""
+        doc = _copy(COMPLETE_DOC)
+        entry: dict[str, Any] = {
+            "type": "ExternalIdentifier",
+            "externalIdentifierType": identifier_type,
+        }
+        if identifier is not None:
+            entry["identifier"] = identifier
+        _element(doc, "software_Package")["externalIdentifier"] = [entry]
+
+        messages = PackageCpeRule().evaluate(doc, _context())
+        assert len(messages) == 1
+        assert identifier_type.rsplit("/", 1)[-1] in messages[0].message

@@ -166,6 +166,16 @@ Profile validation still runs and reports independently, so completeness
 findings are actionable now. To see profile results in isolation, read
 `profile_status` and `rule_coverage` rather than `overall_valid`.
 
+## Identifiers and references
+
+Element ids, references and vocabulary values (`relationshipType`,
+`externalIdentifierType`) are compared after JSON-LD compact-IRI expansion,
+so `spdx:Foo` and `https://spdx.org/rdf/3.0.1/terms/Foo` are the same id. The
+prefixes used are the one the SPDX 3.0.1 context defines (`spdx:`), pinned in
+`spdx3_model.py`, plus any prefixes the document defines in an inline
+`@context`. Remote contexts are never fetched, and relative ids are not
+resolved against `@base`.
+
 ## Rules pending a Qualcomm decision
 
 Matrix rows marked `NEEDS_DECISION` are not implemented and ship no

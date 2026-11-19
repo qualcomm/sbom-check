@@ -460,3 +460,119 @@ def test_creation_info_is_wrong_type_false_when_dangling_or_absent() -> None:
 
     assert doc.creation_info_is_wrong_type(first) is False
     assert doc.creation_info_is_wrong_type(second) is False
+
+
+SPDX_TERMS = "https://spdx.org/rdf/3.0.1/terms/"
+
+
+@pytest.mark.parametrize(
+    "raw_type",
+    [
+        "cpe23",
+        "spdx:Core/ExternalIdentifierType/cpe23",
+        f"{SPDX_TERMS}Core/ExternalIdentifierType/cpe23",
+    ],
+)
+def test_external_identifier_type_is_normalized(raw_type: str) -> None:
+    """externalIdentifierType is reduced to its short enum member."""
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {
+                    "type": "software_Package",
+                    "spdxId": "a",
+                    "externalIdentifier": {
+                        "type": "ExternalIdentifier",
+                        "externalIdentifierType": raw_type,
+                        "identifier": "cpe:2.3:a:x:y:1.0",
+                    },
+                }
+            ]
+        }
+    )
+
+    [identifier] = doc.external_identifiers(doc.elements[0])
+    assert identifier.identifier_type == "cpe23"
+
+
+def test_compact_and_expanded_ids_index_to_one_key() -> None:
+    """spdx: ids are indexed expanded and found by either spelling."""
+    doc = Spdx3Document.from_dict(
+        {"@graph": [{"type": "Organization", "spdxId": "spdx:CustomAgent"}]}
+    )
+
+    [element] = doc.elements
+    assert element.element_id == f"{SPDX_TERMS}CustomAgent"
+    assert doc.element_by_id("spdx:CustomAgent") is element
+    assert doc.element_by_id(f"{SPDX_TERMS}CustomAgent") is element
+
+
+def test_relationship_endpoints_are_expanded() -> None:
+    doc = Spdx3Document.from_dict(
+        {
+            "@graph": [
+                {
+                    "type": "Relationship",
+                    "spdxId": "r1",
+                    "from": "spdx:a",
+                    "relationshipType": "describes",
+                    "to": ["spdx:b", "_:c", "urn:x:y"],
+                }
+            ]
+        }
+    )
+
+    [rel] = doc.relationships()
+    assert rel.from_id == f"{SPDX_TERMS}a"
+    assert rel.to_ids == (f"{SPDX_TERMS}b", "_:c", "urn:x:y")
+    assert doc.has_relationship(f"{SPDX_TERMS}a", "describes") is True
+    assert doc.has_relationship("spdx:a", "describes") is True
+
+
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        ({"ex": "https://example.test/"}, "https://example.test/a"),
+        (
+            {"ex": {"@id": "https://example.test/", "@prefix": True}},
+            "https://example.test/a",
+        ),
+        # Not a prefix: the IRI does not end in a gen-delim and @prefix is unset.
+        ({"ex": "https://example.test/x"}, "ex:a"),
+        ({"ex": {"@id": "https://example.test/"}}, "ex:a"),
+    ],
+)
+def test_document_context_prefixes(context: dict, expected: str) -> None:
+    doc = Spdx3Document.from_dict(
+        {
+            "@context": ["https://spdx.org/rdf/3.0.1/spdx-context.jsonld", context],
+            "@graph": [],
+        }
+    )
+
+    assert doc.canonical_id("ex:a") == expected
+
+
+def test_cleared_spdx_prefix_is_not_expanded() -> None:
+    doc = Spdx3Document.from_dict({"@context": [{"spdx": None}], "@graph": []})
+
+    assert doc.canonical_id("spdx:a") == "spdx:a"
+
+
+@pytest.mark.parametrize(
+    "value", ["https://example.test/a", "_:b0", "urn:uuid:1234", "plain"]
+)
+def test_non_compact_ids_are_unchanged(value: str) -> None:
+    """Absolute IRIs, blank nodes and unprefixed strings pass through.
+
+    A term named like a scheme does not rewrite ``scheme://`` IRIs, and
+    ``_`` is reserved for blank nodes (JSON-LD 1.1 section 4.1.3).
+    """
+    doc = Spdx3Document.from_dict(
+        {
+            "@context": [{"https": "https://evil.test/", "_": "https://evil.test/"}],
+            "@graph": [],
+        }
+    )
+
+    assert doc.canonical_id(value) == value

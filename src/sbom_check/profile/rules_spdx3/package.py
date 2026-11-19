@@ -11,7 +11,6 @@ from sbom_check.profile.rules_spdx3._common import (
     _AGENT_TYPES,
     _CPE_IDENTIFIER_TYPES,
     _SPDX_3_0_1,
-    _entry_has_type,
     _is_absolute_iri,
     _is_nonempty_str,
     _message,
@@ -92,14 +91,14 @@ class PackageIdentifierRule:
                         found_value=spdx_id,
                     )
                 )
-            elif spdx_id in duplicates:
+            elif (canonical_id := doc.canonical_id(spdx_id)) in duplicates:
                 messages.append(
                     _message(
                         rule_id=self.rule_id,
                         message=(
                             f"Package @graph[{pkg.graph_index}] spdxId "
                             f"{spdx_id!r} is defined by "
-                            f"{len(duplicates[spdx_id])} @graph entries, so "
+                            f"{len(duplicates[canonical_id])} @graph entries, so "
                             "references to it are ambiguous."
                         ),
                         field_path=f"@graph[{pkg.graph_index}]",
@@ -399,6 +398,6 @@ class PackageVerificationCodeRule:
                 candidate = element.raw
             else:
                 continue
-            if _entry_has_type(candidate, "PackageVerificationCode"):
+            if "PackageVerificationCode" in doc.types_of(candidate):
                 resolved.append(candidate)
         return resolved
