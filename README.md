@@ -6,11 +6,12 @@ SPDX-License-Identifier: BSD-3-Clause
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
 
-A multi-format SBOM validator supporting SPDX 2.3 and CycloneDX JSON documents. SPDX documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation.
+A multi-format SBOM validator supporting SPDX 2.3, SPDX 3.0.1, and CycloneDX JSON documents. SPDX 2.3 documents receive configurable completeness requirements; CycloneDX documents currently receive structural schema validation. SPDX 3.0.1 documents receive the proposed Qualcomm completeness rules (pending owner approval), while core validation is still in progress — see [SPDX 3.0.1 Documents](#spdx-301-documents).
 
 ## Features
 
-- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.3–1.7 documents
+- **Multi-format validation**: Automatic detection and validation of SPDX 2.3 and CycloneDX JSON 1.3–1.7 documents, with SPDX 3.0.1 JSON-LD detection
+- **Honest reporting**: A check that could not run is reported as unevaluated, never as a pass
 - **CLI Tools**: The `sbom-check`, `spdx-validate`, and `cyclonedx-validate` commands are available
 - **Configurable Requirements**: YAML-based configuration system with inheritance
 - **Multiple Profiles**: Built-in profiles for different use cases (basic, default, automotive, etc.)
@@ -113,6 +114,104 @@ Example JSON result:
   "spdx_valid": null,
   "profile_valid": null
 }
+```
+
+## SPDX 3.0.1 Documents
+
+SBOM-Check detects SPDX 3.0.1 JSON-LD documents by their `@context` and reports
+them with `document_format: "SPDX3"`:
+
+```bash
+uv run sbom-check supplier-bom.spdx.json
+```
+
+Two limits matter when reading those results.
+
+**Core validation is not yet available.** Validating an SPDX 3.0.1 document
+against the SPDX 3.0.1 schema and SHACL shapes is delivered separately. Until
+it lands, SBOM-Check reports `core_valid: false` with the rule
+`spdx3_core_validation_unavailable` rather than asserting conformance it did
+not check. Use a tool that implements the SPDX 3.0.1 schema and SHACL checks
+to confirm specification conformance.
+
+**Qualcomm completeness rules are pending owner approval.** The requirement
+mapping from SPDX 2.3 to SPDX 3.0.1 is proposed in
+[`docs/spdx3-completeness-matrix.md`](docs/spdx3-completeness-matrix.md) and
+awaits sign-off from the Qualcomm SBOM owners. Currently, `--profile default`
+enables the 21 implemented rules (14 errors, 7 warnings). Whether they stay
+enabled by default before approval is an open decision for those owners;
+see the matrix's status section.
+
+Rows the matrix marks `NEEDS_DECISION` are not implemented. They are not
+skipped silently: each one appears in `rule_coverage` as `skipped` with a
+pending-decision reason. If a profile enables one anyway, it is reported
+`unsupported` and blocks, so an SPDX 3.0.1 document is never reported
+complete on the strength of a check that never ran:
+
+```json
+{
+  "document_format": "SPDX3",
+  "spec_version": "3.0.1",
+  "profile_status": "passed",
+  "rule_coverage": [
+    {
+      "rule_id": "spdx3_completeness.package_purl",
+      "outcome": "skipped",
+      "reason": "pending decision: the requirement mapping awaits a decision by the Qualcomm SBOM owners, so this document was not checked against it"
+    }
+  ]
+}
+```
+
+`rule_coverage` records every completeness rule that was considered, so a
+consumer can distinguish a rule that passed from one that never ran. Outcomes
+are `passed`, `failed`, `skipped` (disabled by configuration),
+`not_applicable` (does not apply to this specification version), and
+`unsupported` (no approved mapping, or evaluation failed). Only `unsupported`
+blocks a document from being reported complete.
+
+SPDX 2.3 profile rules are not applied to SPDX 3.0.1 documents. They read SPDX
+2.3 JSON field paths such as `packages[]` and `relationships[]`, which do not
+exist in the SPDX 3.0.1 object model.
+
+### Completeness check configuration
+
+Individual completeness rules are configured under
+`compliance_requirements.completeness_checks`, keyed by rule ID:
+
+```yaml
+compliance_requirements:
+  completeness_checks:
+    spdx3_completeness.package_supplier:
+      enabled: true
+      severity: ERROR
+      spdx_versions: ["3.0.1"]
+      description: Package must identify its supplier
+      remediation: Add a suppliedBy property referencing an Agent element.
+```
+
+| Field | Meaning |
+|---|---|
+| `enabled` | Whether the rule runs. A disabled rule is reported `skipped` and does not block. |
+| `severity` | `ERROR`, `WARNING`, or `INFO`. Set per rule; a rule reports a finding and configuration decides how loud it is. |
+| `spdx_versions` | Specification versions the rule applies to, as bare versions (`"2.3"`, `"3.0.1"`). |
+| `description` | Vendor-facing description of the requirement. |
+| `remediation` | Vendor-facing instruction for fixing a failure. A configured value replaces the rule's built-in text. |
+| `supported` | Set `false` for a rule with no approved mapping. Reported `unsupported`, and blocks completeness. |
+
+Completeness rules are opt-in per profile. A rule the active profile does not
+list at all is reported `skipped` and does not block, so a core-only profile
+such as `basic_spdx` enforces no completeness requirements. Use `--profile
+default` to get the SPDX 3.0.1 completeness rules and their configured
+severities.
+
+The legacy boolean form is still accepted, so existing configuration keeps
+working:
+
+```yaml
+compliance_requirements:
+  completeness_checks:
+    require_package_identifier: true
 ```
 
 ## Configuration Profiles

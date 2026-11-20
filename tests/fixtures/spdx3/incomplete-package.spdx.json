@@ -1,0 +1,39 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://qualcomm.example/spdx/doc-incomplete",
+      "name": "incomplete-package-example",
+      "creationInfo": "_:creationInfo",
+      "rootElement": ["https://qualcomm.example/spdx/pkg/bare"]
+    },
+    {
+      "@id": "_:creationInfo",
+      "type": "CreationInfo",
+      "specVersion": "3.0.1",
+      "created": "2026-01-15T00:00:00Z",
+      "createdBy": ["https://qualcomm.example/spdx/agent/acme-corp"]
+    },
+    {
+      "type": "Organization",
+      "spdxId": "https://qualcomm.example/spdx/agent/acme-corp",
+      "name": "ACME Corporation",
+      "creationInfo": "_:creationInfo"
+    },
+    {
+      "type": "software_Package",
+      "spdxId": "https://qualcomm.example/spdx/pkg/bare",
+      "name": "bare",
+      "creationInfo": "_:creationInfo"
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://qualcomm.example/spdx/rel/describes",
+      "creationInfo": "_:creationInfo",
+      "from": "https://qualcomm.example/spdx/doc-incomplete",
+      "relationshipType": "describes",
+      "to": ["https://qualcomm.example/spdx/pkg/bare"]
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "@context": "https://spdx.org/rdf/3.0.1/spdx-context.jsonld",
+  "@graph": [
+    {
+      "type": "SpdxDocument",
+      "spdxId": "https://qualcomm.example/spdx/doc-dangling",
+      "name": "dangling-supplier-example",
+      "creationInfo": "_:creationInfo",
+      "rootElement": ["https://qualcomm.example/spdx/pkg/dangler"]
+    },
+    {
+      "@id": "_:creationInfo",
+      "type": "CreationInfo",
+      "specVersion": "3.0.1",
+      "created": "2026-01-15T00:00:00Z",
+      "createdBy": ["https://qualcomm.example/spdx/agent/acme-corp"]
+    },
+    {
+      "type": "Organization",
+      "spdxId": "https://qualcomm.example/spdx/agent/acme-corp",
+      "name": "ACME Corporation",
+      "creationInfo": "_:creationInfo"
+    },
+    {
+      "type": "software_Package",
+      "spdxId": "https://qualcomm.example/spdx/pkg/dangler",
+      "name": "dangler",
+      "creationInfo": "_:creationInfo",
+      "software_packageVersion": "3.1.4",
+      "software_downloadLocation": "https://qualcomm.example/dist/dangler-3.1.4.tar.gz",
+      "software_packageUrl": "pkg:generic/dangler@3.1.4",
+      "suppliedBy": "https://qualcomm.example/spdx/agent/does-not-exist"
+    },
+    {
+      "type": "Relationship",
+      "spdxId": "https://qualcomm.example/spdx/rel/describes",
+      "creationInfo": "_:creationInfo",
+      "from": "https://qualcomm.example/spdx/doc-dangling",
+      "relationshipType": "describes",
+      "to": ["https://qualcomm.example/spdx/pkg/dangler"]
+    }
+  ]
+}

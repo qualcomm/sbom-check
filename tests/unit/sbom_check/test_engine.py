@@ -5,6 +5,8 @@
 
 import json
 from copy import deepcopy
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import pytest
@@ -16,9 +18,11 @@ from sbom_check.engine import SbomCheckEngine
 from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
+    RuleOutcome,
     SbomCheckResult,
     ValidationSeverity,
 )
+from sbom_check.profile.rules_spdx3 import SPDX3_PENDING_DECISION_RULES, SPDX3_RULES
 from spdx_validator.engine import ValidationEngine
 
 
@@ -710,3 +714,221 @@ def test_explicit_validator_returns_structured_result_for_non_object_input():
     assert result.document_format == "unknown"
     assert result.core_valid is False
     assert result.messages[0].rule_id == "unsupported_format"
+
+
+SPDX3_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "spdx3" / "complete.spdx.json"
+)
+
+
+class _PassingSpdx3Core:
+    """Core validator stand-in that reports a conformant SPDX 3 document.
+
+    The real SPDX 3.0.1 core validator is delivered separately, so tests
+    that need core validation to succeed substitute this.
+    """
+
+    format = DocumentFormat.SPDX3
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        pass
+
+    def validate(self, *_args, **_kwargs):
+        return self.validate_dict({})
+
+    def validate_json_string(self, *_args, **_kwargs):
+        return self.validate_dict({})
+
+    def validate_file(self, *_args, **_kwargs):
+        return self.validate_dict({})
+
+    def validate_dict(self, *_args, **_kwargs):
+        return SimpleNamespace(is_valid=True, messages=[])
+
+
+def _spdx3_document():
+    """Load the SPDX 3.0.1 fixture document."""
+    return json.loads(SPDX3_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_spdx3_document_does_not_pass_without_core_validation():
+    """An SPDX 3 document must not pass while core validation is unavailable."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    assert result.document_format is DocumentFormat.SPDX3
+    assert result.spec_version == "3.0.1"
+    assert result.overall_valid is False
+    assert result.core_valid is False
+
+
+def test_spdx3_profile_rules_run_and_report_coverage():
+    """Every registered and pending SPDX 3 rule must be accounted for in coverage."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    assert len(result.rule_coverage) == len(SPDX3_RULES) + len(
+        SPDX3_PENDING_DECISION_RULES
+    )
+    assert {entry.rule_id for entry in result.rule_coverage} == {
+        rule.rule_id for rule in SPDX3_RULES
+    } | set(SPDX3_PENDING_DECISION_RULES)
+    assert result.has_unevaluated_rules() is False
+
+
+def test_spdx3_pending_decision_rows_are_visible_in_coverage():
+    """NEEDS_DECISION rows are reported with a pending-decision reason."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    pending = {
+        entry.rule_id: entry
+        for entry in result.rule_coverage
+        if entry.rule_id in SPDX3_PENDING_DECISION_RULES
+    }
+    assert set(pending) == set(SPDX3_PENDING_DECISION_RULES)
+    for entry in pending.values():
+        assert entry.outcome is RuleOutcome.SKIPPED
+        assert entry.reason is not None
+        assert "pending decision" in entry.reason
+
+
+def test_complete_spdx3_document_passes_profile_validation():
+    """The conforming fixture must satisfy every implemented rule."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    assert result.profile_status is ProfileStatus.PASSED
+    assert result.rules_by_outcome(RuleOutcome.FAILED) == []
+
+
+def test_valid_spdx3_document_can_fail_profile_while_passing_core():
+    """Profile failure must be reportable independently of core conformance.
+
+    This is the distinction the profile layer exists to preserve: a
+    document can be structurally valid SPDX 3.0.1 and still not meet
+    Qualcomm completeness requirements.
+    """
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    result = SbomCheckEngine(validator_class=_PassingSpdx3Core).validate_dict(document)
+
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.FAILED
+    assert result.overall_valid is False
+    assert result.rules_by_outcome(RuleOutcome.FAILED)
+
+
+def test_spdx3_profile_failures_are_not_presented_as_spec_failures():
+    """Profile findings must carry profile rule ids, not spec rule ids."""
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    result = SbomCheckEngine(validator_class=_PassingSpdx3Core).validate_dict(document)
+
+    rule_ids = {message.rule_id for message in result.messages}
+    assert rule_ids
+    assert all(rule_id.startswith("spdx3_completeness.") for rule_id in rule_ids)
+
+
+def test_spdx3_profile_findings_carry_element_paths_and_remediation():
+    """Each profile finding must be actionable on its own."""
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "missing-supplier.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    result = SbomCheckEngine(validator_class=_PassingSpdx3Core).validate_dict(document)
+
+    assert result.messages
+    for message in result.messages:
+        assert message.field_path
+        assert message.remediation
+
+
+def test_spdx3_reports_core_validation_unavailable():
+    """The unavailable SPDX 3 core validator must be visible in messages."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    rule_ids = {message.rule_id for message in result.messages}
+    assert "spdx3_core_validation_unavailable" in rule_ids
+
+
+def test_spdx3_does_not_run_spdx2_profile_rules():
+    """SPDX 2.3 field-path rules must not be applied to SPDX 3 documents."""
+    result = SbomCheckEngine().validate_dict(_spdx3_document())
+
+    rule_ids = {message.rule_id for message in result.messages}
+    assert "missing_required_field" not in rule_ids
+    assert "missing_package_field" not in rule_ids
+    assert "missing_describes_relationship" not in rule_ids
+
+
+def test_spdx2_profile_is_unaffected_by_spdx3_support():
+    """SPDX 2.3 documents keep reporting no rule coverage."""
+    document = {
+        "spdxVersion": "SPDX-2.3",
+        "dataLicense": "CC0-1.0",
+        "SPDXID": "SPDXRef-DOCUMENT",
+        "name": "Test",
+        "documentNamespace": "https://example.com/test",
+        "creationInfo": {
+            "created": "2023-01-01T00:00:00Z",
+            "creators": ["Tool: test"],
+        },
+    }
+
+    result = SbomCheckEngine().validate_dict(document)
+
+    assert result.document_format is DocumentFormat.SPDX
+    assert result.rule_coverage == []
+    assert result.has_unevaluated_rules() is False
+
+
+def test_basic_spdx_profile_does_not_enforce_spdx3_completeness():
+    """basic_spdx is core-only, so it must not report completeness findings.
+
+    The profile lists no completeness checks. Running every registered
+    rule under an implicit ERROR default would make a core-only profile
+    fail documents on requirements it never opted into, and would ignore
+    the severities the default profile deliberately sets.
+    """
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    config = ConfigLoader().load_profile("basic_spdx")
+
+    result = SbomCheckEngine(
+        config=config, validator_class=_PassingSpdx3Core
+    ).validate_dict(document)
+
+    assert result.core_valid is True
+    assert result.profile_status is ProfileStatus.PASSED
+    assert [message for message in result.messages if message.rule_id] == []
+    assert result.has_unevaluated_rules() is False
+    assert {entry.outcome for entry in result.rule_coverage} == {RuleOutcome.SKIPPED}
+
+
+def test_default_profile_applies_configured_spdx3_severities():
+    """The default profile's per-rule severities must reach the emitted messages."""
+    document = json.loads(
+        (SPDX3_FIXTURE.parent / "incomplete-package.spdx.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    result = SbomCheckEngine(validator_class=_PassingSpdx3Core).validate_dict(document)
+
+    severities = {
+        message.rule_id: message.severity
+        for message in result.messages
+        if message.rule_id and message.rule_id.startswith("spdx3_completeness.")
+    }
+    assert severities["spdx3_completeness.package_version"] is ValidationSeverity.ERROR
+    assert severities["spdx3_completeness.copyright_text"] is ValidationSeverity.WARNING

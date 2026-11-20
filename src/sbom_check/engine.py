@@ -15,11 +15,14 @@ from sbom_check.detection import UnsupportedDocumentError, detect_document
 from sbom_check.models import (
     DocumentFormat,
     ProfileStatus,
+    RuleCoverage,
     SbomCheckResult,
     ValidationMessage,
     ValidationSeverity,
     ValidationSummary,
 )
+from sbom_check.profile.registry import ProfileRuleRegistry, RuleContext
+from sbom_check.profile.rules_spdx3 import register_spdx3_rules
 from spdx_validator.engine import ValidationEngine
 from spdx_validator.models import DEFAULT_FILES_ANALYZED
 
@@ -178,17 +181,21 @@ class SbomCheckEngine:
             if self._engine_override is not None or self._validator_class is not None
             else self._get_engine(detected.validator_class)
         )
-        profile_applicable = detected.format is DocumentFormat.SPDX
-
         # Run the selected format engine.
         core_result = selected_engine.validate_dict(sbom_data)
 
-        # The completeness profile is SPDX-specific.
-        profile_result = (
-            self._validate_profile_requirements(sbom_data)
-            if profile_applicable
-            else None
-        )
+        # The SPDX 2.3 profile rules read SPDX 2.3 JSON field paths and
+        # cannot be applied to the SPDX 3.0.1 object model, which uses a
+        # typed element graph instead.
+        profile_result: SbomCheckResult | None = None
+        rule_coverage: list[RuleCoverage] | None = None
+
+        if detected.format is DocumentFormat.SPDX:
+            profile_result = self._validate_profile_requirements(sbom_data)
+        elif detected.format is DocumentFormat.SPDX3:
+            profile_result, rule_coverage = self._validate_spdx3_profile(
+                sbom_data, detected.spec_version
+            )
 
         # Combine results
         combined_result = SbomCheckResult.combine(
@@ -198,9 +205,56 @@ class SbomCheckEngine:
             file_path=file_path,
             document_format=detected.format,
             spec_version=detected.spec_version,
+            profile_rule_coverage=rule_coverage,
         )
 
         return combined_result
+
+    def _validate_spdx3_profile(
+        self, sbom_data: dict[str, Any], spec_version: str | None
+    ) -> tuple[SbomCheckResult, list[RuleCoverage]]:
+        """Run the Qualcomm completeness profile for an SPDX 3.0.1 document.
+
+        Args:
+            sbom_data: Parsed SPDX 3.0.1 document.
+            spec_version: Detected specification version.
+
+        Returns:
+            tuple[SbomCheckResult, list[RuleCoverage]]: The profile result
+            and one coverage entry per registered rule, so a caller can
+            tell a rule that passed from one that never ran.
+        """
+        registry = ProfileRuleRegistry()
+        register_spdx3_rules(registry)
+
+        context = RuleContext(
+            spec_version=spec_version,
+            document_format=DocumentFormat.SPDX3,
+            config=self.config,
+        )
+        messages, coverage = registry.run(sbom_data, context)
+
+        result = SbomCheckResult(
+            overall_valid=True,
+            spdx_valid=True,  # Overridden in combine().
+            profile_valid=True,
+            profile_name=self.config.metadata.name,
+            document_format=DocumentFormat.SPDX3,
+            spec_version=spec_version,
+        )
+        for message in messages:
+            result.add_message(
+                message.severity,
+                message.message,
+                rule_id=message.rule_id,
+                field_path=message.field_path,
+                section_reference=message.section_reference,
+                found_value=message.found_value,
+                expected_value=message.expected_value,
+                remediation=message.remediation,
+            )
+
+        return result, coverage
 
     def _unsupported_result(
         self, error: UnsupportedDocumentError, file_path: str | None = None
