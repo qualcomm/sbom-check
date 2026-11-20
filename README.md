@@ -51,12 +51,14 @@ Or install production dependencies only:
 uv sync --no-dev
 ```
 
-**Option 3: Traditional pip installation**
+**Option 3: Install from the checked-out source with pip (local only)**
 ```bash
-pip install -e .
+python -m pip install -e .
 ```
 
-**Note:** All examples in this documentation use `uv run` commands. If you installed via pip, simply omit the `uv run` prefix (e.g., use `sbom-check --help` instead of `uv run sbom-check --help`).
+The project is not distributed through PyPI. Run this command from the trusted repository checkout; do not install the project from a package index by its distribution name. The `pyproject.toml` name identifies this local project for packaging and version metadata.
+
+**Note:** All examples in this documentation use `uv run` commands. If you installed from the checkout with pip, simply omit the `uv run` prefix (e.g., use `sbom-check --help` instead of `uv run sbom-check --help`).
 
 ### Basic Usage
 
