@@ -292,7 +292,7 @@ def _default_spdx3_completeness_checks() -> dict[str, CompletenessCheckRule]:
             severity=error,
             description=(
                 "The SBOM document must have a globally unique identifier "
-                "(spdxId) with no '#' fragment."
+                "(spdxId or @id) with no '#' fragment."
             ),
             remediation=(
                 "Make sure your SBOM tooling assigns the document a unique, "
@@ -353,7 +353,7 @@ def _default_spdx3_completeness_checks() -> dict[str, CompletenessCheckRule]:
         "spdx3_completeness.package_identifier": _rule(
             severity=error,
             description=(
-                "Every package in the SBOM must have a unique identifier (spdxId)."
+                "Every package in the SBOM must have a unique identifier (spdxId or @id)."
             ),
             remediation=(
                 "Make sure every package you list has a unique identifier "

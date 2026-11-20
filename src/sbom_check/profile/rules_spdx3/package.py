@@ -16,6 +16,7 @@ from sbom_check.profile.rules_spdx3._common import (
     _message,
     _PackageLicenseRelationshipRule,
     _PackageScalarFieldRule,
+    _raw_element_id,
 )
 from sbom_check.profile.spdx3_model import Spdx3Document
 
@@ -43,7 +44,7 @@ class PackageIdentifierRule:
 
     rule_id = "spdx3_completeness.package_identifier"
     description = (
-        "software_Package.spdxId must be present, non-empty, an absolute "
+        "software_Package.spdxId (or its @id alias) must be present, non-empty, an absolute "
         "IRI, and unique within the document."
     )
     spdx_versions = _SPDX_3_0_1
@@ -64,28 +65,28 @@ class PackageIdentifierRule:
         messages: list[ValidationMessage] = []
         for pkg in doc.packages():
             path = pkg.element_path()
-            spdx_id = pkg.get("spdxId")
+            id_key, spdx_id = _raw_element_id(pkg)
             if not _is_nonempty_str(spdx_id):
                 messages.append(
                     _message(
                         rule_id=self.rule_id,
-                        message=f"Package {path} is missing a non-empty spdxId.",
+                        message=f"Package {path} is missing a non-empty spdxId (or @id).",
                         field_path=path,
-                        remediation="Assign a globally unique absolute IRI as spdxId.",
+                        remediation="Assign a globally unique absolute IRI as spdxId (or @id).",
                         section_reference="Identifiers",
                     )
                 )
-            elif not _is_absolute_iri(spdx_id):
+            elif not _is_absolute_iri(doc.canonical_id(spdx_id)):
                 messages.append(
                     _message(
                         rule_id=self.rule_id,
                         message=(
-                            f"Package {path} spdxId {spdx_id!r} is not an absolute IRI."
+                            f"Package {path} {id_key} {spdx_id!r} is not an absolute IRI."
                         ),
                         field_path=path,
                         remediation=(
                             "Use an absolute IRI (with a scheme or 'urn:' "
-                            "prefix) as the package spdxId."
+                            "prefix) as the package spdxId (or @id)."
                         ),
                         section_reference="Identifiers",
                         found_value=spdx_id,
@@ -96,7 +97,7 @@ class PackageIdentifierRule:
                     _message(
                         rule_id=self.rule_id,
                         message=(
-                            f"Package @graph[{pkg.graph_index}] spdxId "
+                            f"Package @graph[{pkg.graph_index}] {id_key} "
                             f"{spdx_id!r} is defined by "
                             f"{len(duplicates[canonical_id])} @graph entries, so "
                             "references to it are ambiguous."

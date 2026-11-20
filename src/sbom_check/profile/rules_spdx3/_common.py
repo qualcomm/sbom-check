@@ -20,6 +20,7 @@ from sbom_check.profile.spdx3_model import Spdx3Document
 
 if TYPE_CHECKING:
     from sbom_check.profile.registry import RuleContext
+    from sbom_check.profile.spdx3_model import Spdx3Element
 
 _SPDX_3_0_1: tuple[str, ...] = ("3.0.1",)
 _AGENT_TYPES = ("Agent", "Organization", "Person", "Tool")
@@ -123,6 +124,35 @@ def _is_nonempty_str(value: Any) -> bool:
         non-whitespace character.
     """
     return isinstance(value, str) and bool(value.strip())
+
+
+_ID_KEYS = ("spdxId", "@id")
+
+
+def _raw_element_id(element: Spdx3Element) -> tuple[str, Any]:
+    """Return the identifier property an element uses, and its raw value.
+
+    SPDX 3.0.1 JSON-LD aliases ``spdxId`` to ``@id``, so an element may
+    carry its identifier under either key. This picks the key the
+    adapter indexes the element by (the first of ``spdxId`` / ``@id``
+    whose value is a string), so identifier rules check the same value
+    that references resolve against. When neither value is a string,
+    the first key present is returned so its value can be reported.
+
+    Args:
+        element: The element to read.
+
+    Returns:
+        tuple[str, Any]: The key name and its raw value. The value is
+        None if the element has neither key.
+    """
+    for key in _ID_KEYS:
+        if isinstance(element.get(key), str):
+            return key, element.get(key)
+    for key in _ID_KEYS:
+        if key in element.raw:
+            return key, element.get(key)
+    return _ID_KEYS[0], None
 
 
 def _is_iri_char(char: str, *, allow_private: bool = False) -> bool:

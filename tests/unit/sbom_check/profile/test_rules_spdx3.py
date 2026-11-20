@@ -964,6 +964,123 @@ class TestDuplicateIdentifiers:
         assert DocumentIdentifierRule().evaluate(doc, _context()) == []
 
 
+class TestIdAliasIdentifiers:
+    """``@id`` is the JSON-LD alias of ``spdxId``; identifier rules accept either."""
+
+    @staticmethod
+    def _use_at_id(element: dict[str, Any], value: str | None = None) -> None:
+        element["@id"] = element.pop("spdxId") if value is None else value
+        element.pop("spdxId", None)
+
+    @pytest.mark.parametrize(
+        ("type_name", "rule"),
+        [
+            ("software_Package", PackageIdentifierRule()),
+            ("SpdxDocument", DocumentIdentifierRule()),
+        ],
+    )
+    def test_at_id_only_identifier_passes(self, type_name: str, rule: Any) -> None:
+        """An element identified only by @id is not reported as missing an id."""
+        doc = _copy(COMPLETE_DOC)
+        self._use_at_id(_element(doc, type_name))
+
+        assert rule.evaluate(doc, _context()) == []
+
+    def test_at_id_only_compact_package_id_passes(self) -> None:
+        """A compact spdx: @id expands to an absolute IRI and passes."""
+        doc = _copy(COMPLETE_DOC)
+        self._use_at_id(_element(doc, "software_Package"), "spdx:pkg-libwidget")
+
+        assert PackageIdentifierRule().evaluate(doc, _context()) == []
+
+    def test_at_id_only_package_id_must_be_absolute_iri(self) -> None:
+        """A malformed @id is checked like a malformed spdxId, naming @id."""
+        doc = _copy(COMPLETE_DOC)
+        self._use_at_id(_element(doc, "software_Package"), "not a URI://x")
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+
+        assert [m.found_value for m in messages] == ["not a URI://x"]
+        assert "@id 'not a URI://x' is not an absolute IRI" in messages[0].message
+
+    def test_at_id_only_document_id_fragment_fails(self) -> None:
+        """A '#' fragment is prohibited in a document @id as in its spdxId."""
+        doc = _copy(COMPLETE_DOC)
+        self._use_at_id(_element(doc, "SpdxDocument"), f"{DOC_ID}#frag")
+
+        messages = DocumentIdentifierRule().evaluate(doc, _context())
+
+        assert [m.found_value for m in messages] == [f"{DOC_ID}#frag"]
+        assert "fragment" in messages[0].message
+
+    def test_duplicate_across_spdx_id_and_at_id_reported_for_both(self) -> None:
+        """A twin identified by @id duplicates a package identified by spdxId."""
+        doc = _copy(COMPLETE_DOC)
+        twin = _copy(_element(doc, "software_Package"))
+        self._use_at_id(twin)
+        doc["@graph"].append(twin)
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+
+        assert len(messages) == 2
+        assert {m.found_value for m in messages} == {PKG_ID}
+        assert all("ambiguous" in m.message for m in messages)
+        assert any(" @id " in m.message for m in messages)
+
+    def test_both_keys_check_spdx_id_like_the_adapter(self) -> None:
+        """With both keys set, the rule checks spdxId, the key the adapter indexes by."""
+        doc = _copy(COMPLETE_DOC)
+        pkg = _element(doc, "software_Package")
+        pkg["spdxId"] = "not a URI://x"
+        pkg["@id"] = PKG_ID
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+
+        assert [m.found_value for m in messages] == ["not a URI://x"]
+        assert "spdxId 'not a URI://x' is not an absolute IRI" in messages[0].message
+
+    def test_compact_document_id_expanding_to_fragment_fails(self) -> None:
+        """The fragment check sees the expanded IRI, not the compact spelling."""
+        doc = _copy(COMPLETE_DOC)
+        doc["@context"] = [doc["@context"], {"ex": f"{DOC_ID}#"}]
+        self._use_at_id(_element(doc, "SpdxDocument"), "ex:complete")
+
+        messages = DocumentIdentifierRule().evaluate(doc, _context())
+
+        assert [m.found_value for m in messages] == ["ex:complete"]
+        assert "fragment" in messages[0].message
+
+    def test_compact_package_id_expanding_to_relative_iri_fails(self) -> None:
+        """The absolute-IRI check sees the expanded IRI, not the compact spelling."""
+        doc = _copy(COMPLETE_DOC)
+        doc["@context"] = [doc["@context"], {"ex": "pkg/"}]
+        self._use_at_id(_element(doc, "software_Package"), "ex:lib")
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+
+        assert [m.found_value for m in messages] == ["ex:lib"]
+        assert "is not an absolute IRI" in messages[0].message
+
+    def test_non_string_spdx_id_falls_back_to_at_id(self) -> None:
+        """The rule checks the same key the adapter indexes the element by."""
+        doc = _copy(COMPLETE_DOC)
+        pkg = _element(doc, "software_Package")
+        pkg["@id"] = pkg["spdxId"]
+        pkg["spdxId"] = 5
+
+        assert PackageIdentifierRule().evaluate(doc, _context()) == []
+
+    def test_missing_both_keys_still_fails(self) -> None:
+        """With neither key the package is still missing its identifier."""
+        doc = _copy(COMPLETE_DOC)
+        del _element(doc, "software_Package")["spdxId"]
+
+        messages = PackageIdentifierRule().evaluate(doc, _context())
+
+        assert len(messages) == 1
+        assert "missing a non-empty spdxId (or @id)" in messages[0].message
+
+
 class TestAbsoluteIri:
     """_is_absolute_iri validates RFC 3987/3986 syntax without resolving."""
 

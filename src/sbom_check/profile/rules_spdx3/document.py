@@ -17,6 +17,7 @@ from sbom_check.profile.rules_spdx3._common import (
     _is_valid_timestamp,
     _LicenseReference,
     _message,
+    _raw_element_id,
     _ReferenceProblem,
     _resolve_license_reference,
 )
@@ -89,7 +90,7 @@ class DocumentIdentifierRule:
 
     rule_id = "spdx3_completeness.document_identifier"
     description = (
-        "SpdxDocument.spdxId must be present, non-empty, an absolute IRI, "
+        "SpdxDocument.spdxId (or its @id alias) must be present, non-empty, an absolute IRI, "
         "and must not contain a '#' fragment; every element id in the "
         "document must be unique."
     )
@@ -112,7 +113,7 @@ class DocumentIdentifierRule:
         doc = Spdx3Document.from_dict(document)
         messages = self._duplicate_id_messages(doc)
         if (spdx_doc := doc.spdx_document()) is not None:
-            messages.extend(self._document_id_messages(spdx_doc))
+            messages.extend(self._document_id_messages(spdx_doc, doc))
         return messages
 
     def _duplicate_id_messages(self, doc: Spdx3Document) -> list[ValidationMessage]:
@@ -146,54 +147,60 @@ class DocumentIdentifierRule:
             )
         return messages
 
-    def _document_id_messages(self, spdx_doc: Spdx3Element) -> list[ValidationMessage]:
+    def _document_id_messages(
+        self, spdx_doc: Spdx3Element, doc: Spdx3Document
+    ) -> list[ValidationMessage]:
         """Check the SpdxDocument's own ``spdxId``.
 
         Args:
             spdx_doc: The SpdxDocument element.
+            doc: The document adapter, used to expand a compact IRI so the
+                fragment and absolute-IRI checks see the id references
+                resolve against.
 
         Returns:
             list[ValidationMessage]: At most one finding for a missing,
             fragment-bearing, or non-IRI ``spdxId``.
         """
-        spdx_id = spdx_doc.get("spdxId")
+        id_key, spdx_id = _raw_element_id(spdx_doc)
         path = spdx_doc.element_path()
         if not _is_nonempty_str(spdx_id):
             return [
                 _message(
                     rule_id=self.rule_id,
-                    message=f"SpdxDocument {path} is missing a non-empty spdxId.",
+                    message=f"SpdxDocument {path} is missing a non-empty spdxId (or @id).",
                     field_path=path,
-                    remediation="Assign a globally unique absolute IRI as spdxId.",
+                    remediation="Assign a globally unique absolute IRI as spdxId (or @id).",
                     section_reference="Document metadata",
                 )
             ]
-        if "#" in spdx_id:
+        expanded = doc.canonical_id(spdx_id)
+        if "#" in expanded:
             return [
                 _message(
                     rule_id=self.rule_id,
                     message=(
-                        f"SpdxDocument {path} spdxId {spdx_id!r} contains a "
+                        f"SpdxDocument {path} {id_key} {spdx_id!r} contains a "
                         "prohibited '#' fragment."
                     ),
                     field_path=path,
-                    remediation="Remove the '#' fragment from the document spdxId.",
+                    remediation="Remove the '#' fragment from the document spdxId (or @id).",
                     section_reference="Document metadata",
                     found_value=spdx_id,
                 )
             ]
-        if not _is_absolute_iri(spdx_id):
+        if not _is_absolute_iri(expanded):
             return [
                 _message(
                     rule_id=self.rule_id,
                     message=(
-                        f"SpdxDocument {path} spdxId {spdx_id!r} is not an "
+                        f"SpdxDocument {path} {id_key} {spdx_id!r} is not an "
                         "absolute IRI."
                     ),
                     field_path=path,
                     remediation=(
                         "Use an absolute IRI (with a scheme or 'urn:' prefix) "
-                        "as the document spdxId."
+                        "as the document spdxId (or @id)."
                     ),
                     section_reference="Document metadata",
                     found_value=spdx_id,
