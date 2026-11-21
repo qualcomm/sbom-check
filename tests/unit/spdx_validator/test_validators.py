@@ -449,6 +449,70 @@ class TestSemanticValidator:
         assert len(result.messages) > 0
         assert any("unknown related SPDX ID" in msg.message for msg in result.messages)
 
+    @pytest.mark.parametrize("related_element", ["NONE", "NOASSERTION"])
+    def test_relationship_to_none_or_noassertion_is_valid(
+        self, related_element: str
+    ) -> None:
+        """Test NONE and NOASSERTION are accepted as the related element."""
+        spdx_data = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": related_element,
+                }
+            ],
+        }
+
+        result = SemanticValidator().validate(spdx_data)
+
+        assert result.messages == []
+        assert result.semantic_valid
+
+    @pytest.mark.parametrize(
+        ("element_id", "is_valid"),
+        [
+            ("DocumentRef-zlib:SPDXRef-Package-zlib", True),
+            ("DocumentRef-other:SPDXRef-Package-zlib", False),
+        ],
+    )
+    def test_relationship_to_external_document_element(
+        self, element_id: str, is_valid: bool
+    ) -> None:
+        """Test elements of declared external documents can be referenced."""
+        spdx_data = {
+            "SPDXID": "SPDXRef-DOCUMENT",
+            "externalDocumentRefs": [
+                {
+                    "externalDocumentId": "DocumentRef-zlib",
+                    "spdxDocument": "https://example.com/spdx/zlib",
+                    "checksum": {"algorithm": "SHA1", "checksumValue": "a" * 40},
+                }
+            ],
+            "relationships": [
+                {
+                    "spdxElementId": "SPDXRef-DOCUMENT",
+                    "relationshipType": "DESCRIBES",
+                    "relatedSpdxElement": element_id,
+                },
+                {
+                    "spdxElementId": element_id,
+                    "relationshipType": "DEPENDENCY_OF",
+                    "relatedSpdxElement": "SPDXRef-DOCUMENT",
+                },
+            ],
+        }
+
+        result = SemanticValidator().validate(spdx_data)
+
+        assert result.semantic_valid is is_valid
+        if not is_valid:
+            assert {msg.rule_id for msg in result.messages} == {
+                "semantic_invalid_spdx_id_reference",
+                "semantic_invalid_related_spdx_id_reference",
+            }
+
     def test_non_dict_package_does_not_hide_other_semantic_errors(self) -> None:
         """Test malformed packages do not discard other semantic errors."""
         invalid_data = {
