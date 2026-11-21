@@ -4,12 +4,35 @@
 """Pytest configuration and shared fixtures."""
 
 import json
+from collections.abc import Iterator
+from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from sbom_check.config.loader import ConfigLoader
 from sbom_check.config.models import SbomCheckConfig
+from sbom_validator.remote_failures import disable_remote_failure_reuse
+
+MINIMAL_SPDX3_DOCUMENT = (
+    Path(__file__).parent / "fixtures" / "minimal-spdx3.0.1.spdx.json"
+)
+
+
+@pytest.fixture(autouse=True)
+def reset_remote_failure_reuse() -> Iterator[None]:
+    """Isolate process-local remote-failure reuse state between all tests."""
+    disable_remote_failure_reuse()
+    yield
+    disable_remote_failure_reuse()
+
+
+@pytest.fixture
+def minimal_spdx3_document() -> dict[str, Any]:
+    """Provide an isolated deep copy of the minimal SPDX 3 document."""
+    document = json.loads(MINIMAL_SPDX3_DOCUMENT.read_text(encoding="utf-8"))
+    return deepcopy(document)
 
 
 @pytest.fixture
