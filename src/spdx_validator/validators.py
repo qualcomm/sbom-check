@@ -234,6 +234,23 @@ class SemanticValidator:
             if isinstance(snippet, dict) and "SPDXID" in snippet:
                 all_spdx_ids.add(snippet["SPDXID"])
 
+        # Elements of other documents are referenced as
+        # "DocumentRef-<id>:SPDXRef-<id>" and are resolved through
+        # externalDocumentRefs rather than this document.
+        external_document_ids = {
+            ref["externalDocumentId"]
+            for ref in spdx_data.get("externalDocumentRefs", [])
+            if isinstance(ref, dict) and "externalDocumentId" in ref
+        }
+
+        def is_known_element(element_id: Any) -> bool:
+            if not isinstance(element_id, str):
+                return False
+            if element_id in all_spdx_ids:
+                return True
+            document_id, separator, _ = element_id.partition(":")
+            return bool(separator) and document_id in external_document_ids
+
         # Check for required DESCRIBES relationship efficiently
         # Same logic as the original OWL approach but much faster
         relationships = spdx_data.get("relationships", [])
@@ -256,7 +273,7 @@ class SemanticValidator:
             spdx_element_id = rel.get("spdxElementId")
             related_element_id = rel.get("relatedSpdxElement")
 
-            if spdx_element_id and spdx_element_id not in all_spdx_ids:
+            if spdx_element_id and not is_known_element(spdx_element_id):
                 messages.append(
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
@@ -265,7 +282,12 @@ class SemanticValidator:
                     )
                 )
 
-            if related_element_id and related_element_id not in all_spdx_ids:
+            # The related element may also be NONE or NOASSERTION.
+            if (
+                related_element_id
+                and related_element_id not in ("NONE", "NOASSERTION")
+                and not is_known_element(related_element_id)
+            ):
                 messages.append(
                     ValidationMessage(
                         severity=ValidationSeverity.ERROR,
